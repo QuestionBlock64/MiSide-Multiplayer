@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>MiSideMultiplayer</AssemblyName>
+    <RootNamespace>MiSideMultiplayer</RootNamespace>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="RelayServer\**\*.cs" />
+  </ItemGroup>
+
+  <!--
+    Preferred:
+
+    dotnet build -p:GameDir="C:\Program Files (x86)\Steam\steamapps\common\MiSide"
+
+    Or set MISIDE_GAME_DIR as an environment variable.
+
+    BepInEx 6 IL2CPP generates game and Unity reference assemblies into
+    BepInEx\interop after the first successful game launch with BepInEx
+    installed. This project references those interop assemblies, not
+    MiSide_Data\Managed.
+  -->
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == '' and '$(MISIDE_GAME_DIR)' != ''">$(MISIDE_GAME_DIR)</GameDir>
+    <BepInExDir Condition="'$(BepInExDir)' == '' and '$(GameDir)' != ''">$(GameDir)\BepInEx</BepInExDir>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(MSBuildProjectDirectory)\lib\BepInEx</BepInExDir>
+    <InteropDir Condition="'$(InteropDir)' == ''">$(BepInExDir)\interop</InteropDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(BepInExDir)\core\BepInEx.Core.dll')"
+           Text="BepInEx.Core.dll was not found at '$(BepInExDir)\core\BepInEx.Core.dll'. MiSide uses BepInEx 6 IL2CPP. Install/run BepInExPack_IL2CPP, then build with -p:GameDir=&quot;path\to\MiSide&quot; or -p:BepInExDir=&quot;path\to\MiSide\BepInEx&quot;." />
+    <Error Condition="!Exists('$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll')"
+           Text="BepInEx.Unity.IL2CPP.dll was not found at '$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll'. You need the BepInEx 6 IL2CPP pack, not BepInEx 5 Mono." />
+    <Error Condition="!Exists('$(BepInExDir)\core\Il2CppInterop.Runtime.dll')"
+           Text="Il2CppInterop.Runtime.dll was not found at '$(BepInExDir)\core\Il2CppInterop.Runtime.dll'. You need the BepInEx 6 IL2CPP pack." />
+    <Error Condition="!Exists('$(InteropDir)\UnityEngine.CoreModule.dll')"
+           Text="UnityEngine.CoreModule.dll was not found at '$(InteropDir)\UnityEngine.CoreModule.dll'. Run MiSide once with BepInExPack_IL2CPP installed so BepInEx generates BepInEx\interop, then build again." />
+    <Error Condition="!Exists('$(InteropDir)\Il2Cppmscorlib.dll')"
+           Text="Il2Cppmscorlib.dll was not found at '$(InteropDir)\Il2Cppmscorlib.dll'. Run MiSide once with BepInExPack_IL2CPP installed so BepInEx generates BepInEx\interop, then build again." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core" Condition="Exists('$(BepInExDir)\core\BepInEx.Core.dll')">
+      <HintPath>$(BepInExDir)\core\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP" Condition="Exists('$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll')">
+      <HintPath>$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime" Condition="Exists('$(BepInExDir)\core\Il2CppInterop.Runtime.dll')">
+      <HintPath>$(BepInExDir)\core\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Common" Condition="Exists('$(BepInExDir)\core\Il2CppInterop.Common.dll')">
+      <HintPath>$(BepInExDir)\core\Il2CppInterop.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib" Condition="Exists('$(InteropDir)\Il2Cppmscorlib.dll')">
+      <HintPath>$(InteropDir)\Il2Cppmscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule" Condition="Exists('$(InteropDir)\UnityEngine.CoreModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule" Condition="Exists('$(InteropDir)\UnityEngine.PhysicsModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule" Condition="Exists('$(InteropDir)\UnityEngine.Physics2DModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.Physics2DModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule" Condition="Exists('$(InteropDir)\UnityEngine.AnimationModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule" Condition="Exists('$(InteropDir)\UnityEngine.JSONSerializeModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule" Condition="Exists('$(InteropDir)\UnityEngine.AudioModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
