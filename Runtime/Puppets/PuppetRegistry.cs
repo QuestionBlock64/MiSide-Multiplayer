@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -9,43 +10,67 @@ namespace MiSideMultiplayer
         private readonly Dictionary<string, PuppetController> puppets =
             new Dictionary<string, PuppetController>();
 
-        // ── No-puppet heartbeat ──────────────────────────────────────────────────
+        // ── "No puppet" heartbeat ──────────────────────────────────────────────
         private float nextNoPuppetLogTime;
-        private const float NoPuppetLogInterval = 10f;   // warn every 10 s if still empty
+        private const float NoPuppetLogInterval = 10f;
 
+        // ── Apply incoming remote state ────────────────────────────────────────
         public void Apply(RemotePlayerState state, Transform localPlayerRoot, PuppetFactory factory)
         {
             if (state == null || string.IsNullOrEmpty(state.playerId))
                 return;
 
+            bool isSameScene = IsSameScene(state.sceneName);
+
             PuppetController puppet;
-            if (!puppets.TryGetValue(state.playerId, out puppet) || puppet == null)
+            bool exists = puppets.TryGetValue(state.playerId, out puppet);
+
+            // ── Different scene: destroy puppet if it exists ───────────────────
+            if (!isSameScene)
             {
-                DiagnosticLog.Info("Creating remote puppet for '" + state.playerId + "'.");
-                puppet = factory.Create(state.playerId, localPlayerRoot);
+                if (exists && puppet != null)
+                {
+                    DiagnosticLog.Info(
+                        "Remote player '" + state.playerId +
+                        "' moved to scene '" + state.sceneName +
+                        "' — destroying their puppet.");
+                    Remove(state.playerId);
+                }
+                return;   // Do not create a puppet for a player in a different scene.
+            }
+
+            // ── Same scene: create if needed ──────────────────────────────────
+            if (!exists || puppet == null)
+            {
+                string dname = state.displayName ?? state.playerId;
+
+                DiagnosticLog.Info(
+                    "Creating puppet for '" + state.playerId + "' (" + dname + ")" +
+                    "  scene=" + state.sceneName +
+                    "  pos=(" + state.position.x.ToString("F2") + ", " +
+                               state.position.y.ToString("F2") + ", " +
+                               state.position.z.ToString("F2") + ")");
+
+                puppet = factory.Create(state.playerId, dname, localPlayerRoot);
 
                 if (puppet == null)
                 {
                     DiagnosticLog.Warning(
-                        "No puppet found — factory.Create returned null for '" +
-                        state.playerId + "'. Check that the visual source exists.");
+                        "No puppet found — factory returned null for '" + state.playerId +
+                        "'. Check that a valid visual source exists in the current scene.");
                     return;
                 }
 
                 puppets[state.playerId] = puppet;
-
                 DiagnosticLog.Info(
-                    "Puppet registry now tracks " + puppets.Count +
-                    " remote player(s): " + BuildPlayerList());
+                    "Puppet registry: " + puppets.Count + " puppet(s) active: " + BuildList());
             }
 
-            bool isSameScene = string.IsNullOrEmpty(state.sceneName) ||
-                               state.sceneName == SceneManager.GetActiveScene().name;
-
-            puppet.SetVisible(state.isVisible && isSameScene);
+            puppet.SetVisible(state.isVisible);
             puppet.ApplySnapshot(state);
         }
 
+        // ── Remove by ID ──────────────────────────────────────────────────────
         public void Remove(string playerId)
         {
             if (string.IsNullOrEmpty(playerId))
@@ -56,55 +81,70 @@ namespace MiSideMultiplayer
                 return;
 
             puppets.Remove(playerId);
-
             DiagnosticLog.Info(
-                "Remote player '" + playerId + "' disconnected. " +
+                "Puppet removed for '" + playerId + "'. " +
                 puppets.Count + " puppet(s) remaining.");
 
-            if (puppet != null)
-                Object.Destroy(puppet.GameObject);
+            if (puppet != null && puppet.GameObject != null)
+                UnityEngine.Object.Destroy(puppet.GameObject);
         }
 
+        // ── Tick ──────────────────────────────────────────────────────────────
         public void Tick()
         {
-            // Per-puppet tick
             foreach (KeyValuePair<string, PuppetController> pair in puppets)
-            {
                 if (pair.Value != null)
                     pair.Value.Tick();
-            }
 
             // Rate-limited "no puppet" warning
             if (puppets.Count == 0 && Time.unscaledTime >= nextNoPuppetLogTime)
             {
                 nextNoPuppetLogTime = Time.unscaledTime + NoPuppetLogInterval;
                 DiagnosticLog.Warning(
-                    "No puppet found — no remote players are connected " +
-                    "(or server unreachable). Waiting for incoming state...");
+                    "No puppet found — no remote players are currently connected, " +
+                    "or no one is in the same scene. Waiting for incoming state...");
             }
         }
 
+        // ── LateTick (called from LateUpdate, after Animator runs) ────────────
+        public void LateTick()
+        {
+            foreach (KeyValuePair<string, PuppetController> pair in puppets)
+                if (pair.Value != null)
+                    pair.Value.LateTick();
+        }
+
+        // ── Clear all ─────────────────────────────────────────────────────────
         public void Clear()
         {
             foreach (KeyValuePair<string, PuppetController> pair in puppets)
-            {
-                if (pair.Value != null)
-                    Object.Destroy(pair.Value.GameObject);
-            }
+                if (pair.Value != null && pair.Value.GameObject != null)
+                    UnityEngine.Object.Destroy(pair.Value.GameObject);
 
+            int count = puppets.Count;
             puppets.Clear();
-            DiagnosticLog.Info("Puppet registry cleared.");
+
+            if (count > 0)
+                DiagnosticLog.Info("Puppet registry cleared (" + count + " puppet(s) destroyed).");
         }
 
-        private string BuildPlayerList()
+        // ── Helpers ───────────────────────────────────────────────────────────
+        private static bool IsSameScene(string remoteName)
         {
-            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            // Empty scene name = unknown; optimistic — let visibility handle it.
+            if (string.IsNullOrEmpty(remoteName))
+                return true;
+
+            return remoteName == SceneManager.GetActiveScene().name;
+        }
+
+        private string BuildList()
+        {
+            StringBuilder sb = new StringBuilder();
             foreach (string id in puppets.Keys)
             {
                 if (sb.Length > 0) sb.Append(", ");
-                sb.Append("'");
-                sb.Append(id);
-                sb.Append("'");
+                sb.Append('\''); sb.Append(id); sb.Append('\'');
             }
             return sb.ToString();
         }

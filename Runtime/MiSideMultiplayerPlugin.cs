@@ -129,6 +129,12 @@ namespace MiSideMultiplayer
                 runtimeServices.Tick();
         }
 
+        internal static void LateTickRuntime()
+        {
+            if (runtimeServices != null)
+                runtimeServices.LateTick();
+        }
+
         internal static void DisposeRuntime()
         {
             if (runtimeServices != null)

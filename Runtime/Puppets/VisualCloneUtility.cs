@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -33,7 +34,14 @@ namespace MiSideMultiplayer
             else
                 PlaceCloneAtPuppetRoot(sourceRoot, cloneTransform);
 
-            SanitizeVisualClone(cloneTransform);
+            // Copy MaterialPropertyBlocks BEFORE sanitization.
+            // Material_ColorVariables (a MonoBehaviour) sets skin/hair colour per-renderer
+            // via SetPropertyBlock(). After SanitizeVisualClone removes MonoBehaviours,
+            // those blocks are gone and the clone's skin renders magenta (default shader
+            // colour). Copying them here preserves skin tone on the puppet.
+            CopyMaterialPropertyBlocks(sourceRoot, cloneTransform);
+
+            SanitizeVisualClone(cloneTransform, sourceRoot);
             ForceRenderersVisible(cloneTransform);
             return cloneTransform;
         }
@@ -87,10 +95,15 @@ namespace MiSideMultiplayer
             return skinnedCount + meshCount;
         }
 
-        public static void SanitizeVisualClone(Transform root)
+        // ── Sanitize — strips gameplay scripts but EXPLICITLY preserves Animator ──────
+        public static void SanitizeVisualClone(Transform root, Transform animatorSource = null)
         {
             if (root == null)
                 return;
+
+            // Save all Animators and their settings BEFORE the MonoBehaviour sweep
+            // (In IL2CPP the sweep may inadvertently hit Animator — this guarantees restoration)
+            AnimatorSnapshot[] snapshots = SaveAnimators(root);
 
             RemoveComponents<Camera>(root);
             RemoveComponents<AudioListener>(root);
@@ -101,6 +114,13 @@ namespace MiSideMultiplayer
             RemoveComponents<Collider2D>(root);
             RemoveComponents<CharacterController>(root);
             RemoveComponents<MonoBehaviour>(root);
+
+            // Restore any Animator that was destroyed by the sweep above
+            RestoreAnimators(root, snapshots, animatorSource);
+
+            DiagnosticLog.Info(
+                "SanitizeVisualClone: swept " + root.name +
+                ", animator snapshots: " + snapshots.Length);
         }
 
         public static void ForceRenderersVisible(Transform root)
@@ -125,6 +145,104 @@ namespace MiSideMultiplayer
             }
         }
 
+        // ── Animator preservation helpers ──────────────────────────────────────────────
+
+        private struct AnimatorSnapshot
+        {
+            public Transform Target;
+            public RuntimeAnimatorController Controller;
+            public Avatar Avatar;
+            public AnimatorUpdateMode UpdateMode;
+            public AnimatorCullingMode CullingMode;
+        }
+
+        private static AnimatorSnapshot[] SaveAnimators(Transform root)
+        {
+            Animator[] animators = root.GetComponentsInChildren<Animator>(true);
+            if (animators == null || animators.Length == 0)
+                return new AnimatorSnapshot[0];
+
+            AnimatorSnapshot[] snapshots = new AnimatorSnapshot[animators.Length];
+            for (int i = 0; i < animators.Length; i++)
+            {
+                Animator a = animators[i];
+                if (a == null) continue;
+                snapshots[i].Target      = a.transform;
+                snapshots[i].Controller  = a.runtimeAnimatorController;
+                snapshots[i].Avatar      = a.avatar;
+                snapshots[i].UpdateMode  = a.updateMode;
+                snapshots[i].CullingMode = a.cullingMode;
+            }
+            return snapshots;
+        }
+
+        private static void RestoreAnimators(Transform root, AnimatorSnapshot[] snapshots, Transform source)
+        {
+            for (int i = 0; i < snapshots.Length; i++)
+            {
+                Transform target = snapshots[i].Target;
+                if (target == null) continue;
+
+                Animator existing = target.GetComponent<Animator>();
+                if (existing != null)
+                {
+                    // Animator survived — just make sure it's configured correctly.
+                    existing.applyRootMotion = false;
+                    continue;
+                }
+
+                // Animator was destroyed — re-add it.
+                Animator restored = target.gameObject.AddComponent<Animator>();
+                restored.runtimeAnimatorController = snapshots[i].Controller;
+                restored.avatar                    = snapshots[i].Avatar;
+                restored.applyRootMotion           = false;
+                restored.updateMode                = snapshots[i].UpdateMode;
+                restored.cullingMode               = snapshots[i].CullingMode;
+                restored.enabled                   = true;
+
+                DiagnosticLog.Warning(
+                    "Animator on '" + target.name + "' was removed by MonoBehaviour sweep " +
+                    "and has been restored.");
+            }
+        }
+
+        // ── MaterialPropertyBlock copy ─────────────────────────────────────────────────
+        // Copies per-renderer property blocks from source to clone (matched by index).
+        // Must run before SanitizeVisualClone so both hierarchies are structurally identical.
+        // Fixes magenta skin: Material_ColorVariables sets skin tone via SetPropertyBlock();
+        // once that MonoBehaviour is removed, the clone shows the shader's default magenta.
+        private static void CopyMaterialPropertyBlocks(Transform source, Transform clone)
+        {
+            if (source == null || clone == null) return;
+            try
+            {
+                Renderer[] srcR = source.GetComponentsInChildren<Renderer>(true);
+                Renderer[] dstR = clone.GetComponentsInChildren<Renderer>(true);
+                if (srcR == null || dstR == null) return;
+                int count = srcR.Length < dstR.Length ? srcR.Length : dstR.Length;
+                MaterialPropertyBlock block = new MaterialPropertyBlock();
+                for (int i = 0; i < count; i++)
+                {
+                    if (srcR[i] == null || dstR[i] == null) continue;
+                    try
+                    {
+                        srcR[i].GetPropertyBlock(block);
+                        dstR[i].SetPropertyBlock(block);
+                    }
+                    catch (Exception) { }
+                }
+                DiagnosticLog.Info(
+                    "CopyMaterialPropertyBlocks: " + count +
+                    " renderer(s) copied from '" + source.name + "'.");
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Warning("CopyMaterialPropertyBlocks failed: " + ex.Message);
+            }
+        }
+
+        // ── Component removal helper ───────────────────────────────────────────────────
+
         private static void RemoveComponents<T>(Transform root) where T : Component
         {
             T[] components = root.GetComponentsInChildren<T>(true);
@@ -132,6 +250,10 @@ namespace MiSideMultiplayer
             {
                 Component component = components[i];
                 if (component == null)
+                    continue;
+
+                // Never destroy Animator — it's the core of puppet animation.
+                if (component is Animator)
                     continue;
 
                 Behaviour behaviour = component as Behaviour;
@@ -159,6 +281,8 @@ namespace MiSideMultiplayer
             for (int i = 0; i < root.childCount; i++)
                 SetActiveRecursive(root.GetChild(i), active);
         }
+
+        // ── Manual clone path (CloneVisualOnlyHierarchy) ──────────────────────────────
 
         private static Transform CloneTransformTree(
             Transform source,
@@ -201,11 +325,11 @@ namespace MiSideMultiplayer
 
             Animator animator = destination.gameObject.AddComponent<Animator>();
             animator.runtimeAnimatorController = sourceAnimator.runtimeAnimatorController;
-            animator.avatar = sourceAnimator.avatar;
-            animator.applyRootMotion = false;
-            animator.updateMode = sourceAnimator.updateMode;
-            animator.cullingMode = sourceAnimator.cullingMode;
-            animator.enabled = sourceAnimator.enabled;
+            animator.avatar                    = sourceAnimator.avatar;
+            animator.applyRootMotion           = false;
+            animator.updateMode                = sourceAnimator.updateMode;
+            animator.cullingMode               = sourceAnimator.cullingMode;
+            animator.enabled                   = sourceAnimator.enabled;
         }
 
         private static void CopyMeshFilter(Transform source, Transform destination)
@@ -238,28 +362,30 @@ namespace MiSideMultiplayer
                 return;
 
             SkinnedMeshRenderer renderer = destination.gameObject.AddComponent<SkinnedMeshRenderer>();
-            renderer.sharedMesh = sourceRenderer.sharedMesh;
-            renderer.rootBone = MapTransform(sourceRenderer.rootBone, transformMap);
-            renderer.bones = MapBones(sourceRenderer.bones, transformMap);
-            renderer.localBounds = sourceRenderer.localBounds;
-            renderer.quality = sourceRenderer.quality;
-            renderer.updateWhenOffscreen = true;
+            renderer.sharedMesh           = sourceRenderer.sharedMesh;
+            renderer.rootBone             = MapTransform(sourceRenderer.rootBone, transformMap);
+            renderer.bones                = MapBones(sourceRenderer.bones, transformMap);
+            renderer.localBounds          = sourceRenderer.localBounds;
+            renderer.quality              = sourceRenderer.quality;
+            renderer.updateWhenOffscreen  = true;
             CopyRendererSettings(sourceRenderer, renderer);
         }
 
         private static void CopyRendererSettings(Renderer source, Renderer destination)
         {
-            destination.enabled = source.enabled;
-            destination.sharedMaterials = source.sharedMaterials;
-            destination.shadowCastingMode = source.shadowCastingMode;
-            destination.receiveShadows = source.receiveShadows;
-            destination.lightProbeUsage = source.lightProbeUsage;
-            destination.reflectionProbeUsage = source.reflectionProbeUsage;
-            destination.probeAnchor = null;
+            destination.enabled                  = source.enabled;
+            destination.sharedMaterials          = source.sharedMaterials;
+            destination.shadowCastingMode        = source.shadowCastingMode;
+            destination.receiveShadows           = source.receiveShadows;
+            destination.lightProbeUsage          = source.lightProbeUsage;
+            destination.reflectionProbeUsage     = source.reflectionProbeUsage;
+            destination.probeAnchor              = null;
             destination.allowOcclusionWhenDynamic = source.allowOcclusionWhenDynamic;
         }
 
-        private static Transform[] MapBones(Transform[] sourceBones, Dictionary<Transform, Transform> transformMap)
+        private static Transform[] MapBones(
+            Transform[] sourceBones,
+            Dictionary<Transform, Transform> transformMap)
         {
             if (sourceBones == null)
                 return new Transform[0];
@@ -271,7 +397,9 @@ namespace MiSideMultiplayer
             return bones;
         }
 
-        private static Transform MapTransform(Transform source, Dictionary<Transform, Transform> transformMap)
+        private static Transform MapTransform(
+            Transform source,
+            Dictionary<Transform, Transform> transformMap)
         {
             if (source == null)
                 return null;

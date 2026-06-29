@@ -19,27 +19,25 @@ namespace MiSideMultiplayer
         private readonly int port;
         private readonly bool isEnabled;
         private readonly object writerLock = new object();
-        private readonly object logLock = new object();
-        private readonly Queue<LogEntry> pendingLogs = new Queue<LogEntry>();
+        private readonly object logLock    = new object();
+        private readonly Queue<LogEntry>   pendingLogs = new Queue<LogEntry>();
         private readonly JsonSerializerOptions jsonOptions = new JsonSerializerOptions
         {
             IncludeFields = true
         };
 
-        private Thread workerThread;
+        private Thread    workerThread;
         private volatile bool isRunning;
         private volatile bool isConnected;
-        private TcpClient client;
+        private TcpClient    client;
         private StreamWriter writer;
-        private DateTime nextRetryLogUtc = DateTime.MinValue;
+        private DateTime     nextRetryLogUtc = DateTime.MinValue;
         private bool loggedFirstOutboundState;
         private bool loggedFirstInboundState;
         private bool loggedIgnoredSameId;
+        private int  consecutiveFailures;
 
-        public bool IsConnected
-        {
-            get { return isConnected; }
-        }
+        public bool IsConnected { get { return isConnected; } }
 
         public TcpRelayTransport(
             RpcDispatcher dispatcher,
@@ -49,40 +47,50 @@ namespace MiSideMultiplayer
             int port,
             bool isEnabled)
         {
-            this.dispatcher = dispatcher;
+            this.dispatcher    = dispatcher;
             this.localPlayerId = localPlayerId;
-            this.roomName = string.IsNullOrEmpty(roomName) ? "default" : roomName;
-            this.host = string.IsNullOrEmpty(host) ? "127.0.0.1" : host;
-            this.port = port <= 0 ? 7777 : port;
-            this.isEnabled = isEnabled;
+            this.roomName      = string.IsNullOrEmpty(roomName) ? "default" : roomName;
+            this.host          = string.IsNullOrEmpty(host)     ? "127.0.0.1" : host;
+            this.port          = port <= 0                       ? 7777         : port;
+            this.isEnabled     = isEnabled;
         }
 
         public void Start()
         {
             if (!isEnabled)
             {
-                EnqueueLog(false, "[MiSideMultiplayer] Networking disabled. Puppets can still be driven by injected RPCs.");
+                EnqueueLog(false,
+                    "Networking is DISABLED (EnableNetworking=false). " +
+                    "Puppets can still be driven via injected RPCs. " +
+                    "Set EnableNetworking=true in BepInEx/config to connect.");
                 return;
             }
 
             if (dispatcher == null)
             {
-                EnqueueLog(true, "[MiSideMultiplayer] Relay transport cannot start: RpcDispatcher is null.");
+                EnqueueLog(true,
+                    "Cannot connect — RpcDispatcher is null. " +
+                    "This is an internal error; please report it.");
                 return;
             }
+
+            EnqueueLog(false,
+                "Starting TCP relay transport — target: " + host + ":" + port +
+                "  room='" + roomName + "'  localId='" + localPlayerId + "'");
 
             dispatcher.OutgoingRpc += OnOutgoingRpc;
             isRunning = true;
 
-            workerThread = new Thread(WorkerLoop);
+            workerThread           = new Thread(WorkerLoop);
             workerThread.IsBackground = true;
-            workerThread.Name = "MiSideMultiplayer.Relay";
+            workerThread.Name      = "MiSideMultiplayer.Relay";
             workerThread.Start();
         }
 
         public void Tick()
         {
-            while (TryDequeueLog(out LogEntry entry))
+            LogEntry entry;
+            while (TryDequeueLog(out entry))
             {
                 if (entry.IsWarning)
                     Debug.LogWarning(entry.Message);
@@ -93,18 +101,15 @@ namespace MiSideMultiplayer
 
         public void Dispose()
         {
+            isRunning = false;
             if (dispatcher != null)
                 dispatcher.OutgoingRpc -= OnOutgoingRpc;
 
-            isRunning = false;
             CloseConnection();
-
-            if (workerThread != null && workerThread.IsAlive)
-                workerThread.Join(500);
-
-            Tick();
+            EnqueueLog(false, "Relay transport disposed.");
         }
 
+        // ── Worker thread ──────────────────────────────────────────────────────
         private void WorkerLoop()
         {
             while (isRunning)
@@ -112,10 +117,15 @@ namespace MiSideMultiplayer
                 try
                 {
                     RunConnection();
+                    // If RunConnection returns cleanly (rare), reset failure counter
+                    consecutiveFailures = 0;
                 }
                 catch (Exception ex)
                 {
-                    LogRetry("Relay connection failed: " + ex.Message);
+                    consecutiveFailures++;
+                    LogRetry(
+                        "Connection to relay " + host + ":" + port +
+                        " FAILED (#" + consecutiveFailures + "): " + ex.Message);
                 }
                 finally
                 {
@@ -128,6 +138,9 @@ namespace MiSideMultiplayer
 
         private void RunConnection()
         {
+            EnqueueLog(false,
+                "Attempting to connect to relay server at " + host + ":" + port + " ...");
+
             TcpClient tcpClient = new TcpClient();
             tcpClient.NoDelay = true;
 
@@ -135,61 +148,74 @@ namespace MiSideMultiplayer
             if (!connectTask.Wait(TimeSpan.FromSeconds(3)))
             {
                 tcpClient.Close();
-                throw new TimeoutException("Timed out connecting to " + host + ":" + port);
+                throw new TimeoutException(
+                    "Timed out after 3s connecting to " + host + ":" + port +
+                    ". Is the relay server running?");
             }
 
             connectTask.GetAwaiter().GetResult();
 
-            NetworkStream stream = tcpClient.GetStream();
-            StreamReader reader = new StreamReader(stream, Encoding.UTF8, false, 4096, true);
-            StreamWriter streamWriter = new StreamWriter(stream, new UTF8Encoding(false), 4096, true);
-            streamWriter.NewLine = "\n";
-            streamWriter.AutoFlush = true;
+            NetworkStream  stream       = tcpClient.GetStream();
+            StreamReader   reader       = new StreamReader(stream, Encoding.UTF8, false, 4096, true);
+            StreamWriter   streamWriter = new StreamWriter(stream, new UTF8Encoding(false), 4096, true);
+            streamWriter.NewLine    = "\n";
+            streamWriter.AutoFlush  = true;
 
             lock (writerLock)
             {
-                client = tcpClient;
-                writer = streamWriter;
+                client      = tcpClient;
+                writer      = streamWriter;
                 isConnected = true;
             }
 
-            EnqueueLog(false, "[MiSideMultiplayer] Connected to relay " + host + ":" + port + " room '" + roomName + "'.");
+            consecutiveFailures = 0;
+            EnqueueLog(false,
+                "Connected to relay server at " + host + ":" + port +
+                "  room='" + roomName + "'. Sending hello...");
+
             SendHello();
 
             while (isRunning && tcpClient.Connected)
             {
                 string line = reader.ReadLine();
                 if (line == null)
+                {
+                    EnqueueLog(true,
+                        "Relay server at " + host + ":" + port +
+                        " closed the connection (ReadLine returned null).");
                     break;
+                }
 
                 HandleIncomingLine(line);
             }
 
-            reader.Dispose();
+            EnqueueLog(true,
+                "Disconnected from relay server at " + host + ":" + port + ".");
         }
 
+        // ── Outgoing RPC ───────────────────────────────────────────────────────
         private void OnOutgoingRpc(string eventName, string jsonPayload)
         {
             if (!isRunning || string.IsNullOrEmpty(eventName))
                 return;
 
             RelayEnvelope envelope = new RelayEnvelope();
-            envelope.roomName = roomName;
-            envelope.senderId = localPlayerId;
+            envelope.roomName  = roomName;
+            envelope.senderId  = localPlayerId;
             envelope.eventName = eventName;
-            envelope.payload = jsonPayload ?? string.Empty;
+            envelope.payload   = jsonPayload ?? string.Empty;
 
             SendEnvelope(envelope);
         }
 
         private void SendHello()
         {
-            RelayEnvelope envelope = new RelayEnvelope();
-            envelope.roomName = roomName;
-            envelope.senderId = localPlayerId;
-            envelope.eventName = RpcDispatcher.TransportHelloEvent;
-            envelope.payload = "{}";
-            SendEnvelope(envelope);
+            RelayEnvelope env = new RelayEnvelope();
+            env.roomName  = roomName;
+            env.senderId  = localPlayerId;
+            env.eventName = RpcDispatcher.TransportHelloEvent;
+            env.payload   = "{}";
+            SendEnvelope(env);
         }
 
         private void SendEnvelope(RelayEnvelope envelope)
@@ -201,32 +227,42 @@ namespace MiSideMultiplayer
             }
             catch (Exception ex)
             {
-                EnqueueLog(true, "[MiSideMultiplayer] Failed to serialize relay envelope: " + ex.Message);
+                EnqueueLog(true, "Failed to serialize relay envelope: " + ex.Message);
                 return;
             }
 
             lock (writerLock)
             {
                 if (writer == null)
+                {
+                    // Not connected yet — drop silently (WorkerLoop will retry)
                     return;
+                }
 
                 try
                 {
                     writer.WriteLine(line);
-                    if (envelope.eventName == RpcDispatcher.PlayerStateEvent && !loggedFirstOutboundState)
+
+                    if (envelope.eventName == RpcDispatcher.PlayerStateEvent &&
+                        !loggedFirstOutboundState)
                     {
                         loggedFirstOutboundState = true;
-                        EnqueueLog(false, "[MiSideMultiplayer] Sent first player state packet to relay.");
+                        EnqueueLog(false,
+                            "Sent first local player state packet to relay " +
+                            host + ":" + port + ".");
                     }
                 }
                 catch (Exception ex)
                 {
-                    EnqueueLog(true, "[MiSideMultiplayer] Relay send failed: " + ex.Message);
+                    EnqueueLog(true,
+                        "Relay send failed (connection lost?): " + ex.Message +
+                        " — will reconnect.");
                     CloseConnection();
                 }
             }
         }
 
+        // ── Incoming packet handler ────────────────────────────────────────────
         private void HandleIncomingLine(string line)
         {
             if (string.IsNullOrEmpty(line))
@@ -234,46 +270,56 @@ namespace MiSideMultiplayer
 
             try
             {
-                RelayEnvelope envelope = JsonSerializer.Deserialize<RelayEnvelope>(line, jsonOptions);
+                RelayEnvelope envelope =
+                    JsonSerializer.Deserialize<RelayEnvelope>(line, jsonOptions);
+
                 if (envelope == null)
                     return;
 
                 if (!IsSameRoom(envelope.roomName))
                     return;
 
-                if (!string.IsNullOrEmpty(envelope.senderId) && envelope.senderId == localPlayerId)
+                if (!string.IsNullOrEmpty(envelope.senderId) &&
+                    envelope.senderId == localPlayerId)
                 {
-                    if (!loggedIgnoredSameId && envelope.eventName == RpcDispatcher.PlayerStateEvent)
+                    if (!loggedIgnoredSameId &&
+                        envelope.eventName == RpcDispatcher.PlayerStateEvent)
                     {
                         loggedIgnoredSameId = true;
-                        EnqueueLog(true, "[MiSideMultiplayer] Ignored relay player state with the same LocalPlayerId '" + localPlayerId + "'. Change Identity.LocalPlayerId for same-PC testing.");
+                        EnqueueLog(true,
+                            "Ignored relay packet with same LocalPlayerId '" + localPlayerId +
+                            "'. If testing two clients on one PC, set different " +
+                            "Identity.LocalPlayerId values in the BepInEx config.");
                     }
-
                     return;
                 }
 
                 if (envelope.eventName == RpcDispatcher.TransportHelloEvent)
                     return;
 
-                if (envelope.eventName == RpcDispatcher.PlayerStateEvent && !loggedFirstInboundState)
+                if (envelope.eventName == RpcDispatcher.PlayerStateEvent &&
+                    !loggedFirstInboundState)
                 {
                     loggedFirstInboundState = true;
-                    EnqueueLog(false, "[MiSideMultiplayer] Received first player state packet from relay.");
+                    EnqueueLog(false,
+                        "Received first remote player state packet from relay " +
+                        host + ":" + port +
+                        "  senderId='" + (envelope.senderId ?? "?") + "'.");
                 }
 
                 dispatcher.ReceiveCustom(envelope.eventName, envelope.payload);
             }
             catch (Exception ex)
             {
-                EnqueueLog(true, "[MiSideMultiplayer] Failed to read relay packet: " + ex.Message);
+                EnqueueLog(true, "Failed to parse relay packet: " + ex.Message);
             }
         }
 
+        // ── Helpers ───────────────────────────────────────────────────────────
         private bool IsSameRoom(string remoteRoom)
         {
             if (string.IsNullOrEmpty(remoteRoom))
                 return roomName == "default";
-
             return string.Equals(remoteRoom, roomName, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -290,18 +336,8 @@ namespace MiSideMultiplayer
         {
             lock (writerLock)
             {
-                if (writer != null)
-                {
-                    writer.Dispose();
-                    writer = null;
-                }
-
-                if (client != null)
-                {
-                    client.Close();
-                    client = null;
-                }
-
+                if (writer != null) { writer.Dispose(); writer = null; }
+                if (client != null) { client.Close();   client = null; }
                 isConnected = false;
             }
         }
@@ -309,11 +345,9 @@ namespace MiSideMultiplayer
         private void LogRetry(string message)
         {
             DateTime now = DateTime.UtcNow;
-            if (now < nextRetryLogUtc)
-                return;
-
+            if (now < nextRetryLogUtc) return;
             nextRetryLogUtc = now.AddSeconds(5);
-            EnqueueLog(true, "[MiSideMultiplayer] " + message + " Retrying...");
+            EnqueueLog(true, "[MiSideMultiplayer] " + message + " Will retry in 1s...");
         }
 
         private void SleepWhileRunning(int milliseconds)
@@ -329,24 +363,20 @@ namespace MiSideMultiplayer
         private void EnqueueLog(bool isWarning, string message)
         {
             lock (logLock)
-                pendingLogs.Enqueue(new LogEntry(isWarning, message));
+                pendingLogs.Enqueue(new LogEntry(isWarning, "[MiSideMultiplayer] " + message));
         }
 
         private bool TryDequeueLog(out LogEntry entry)
         {
             lock (logLock)
             {
-                if (pendingLogs.Count == 0)
-                {
-                    entry = default(LogEntry);
-                    return false;
-                }
-
+                if (pendingLogs.Count == 0) { entry = default(LogEntry); return false; }
                 entry = pendingLogs.Dequeue();
                 return true;
             }
         }
 
+        // ── Inner types ───────────────────────────────────────────────────────
         private sealed class RelayEnvelope
         {
             public string roomName;
@@ -357,13 +387,12 @@ namespace MiSideMultiplayer
 
         private struct LogEntry
         {
-            public readonly bool IsWarning;
+            public readonly bool   IsWarning;
             public readonly string Message;
-
             public LogEntry(bool isWarning, string message)
             {
                 IsWarning = isWarning;
-                Message = message;
+                Message   = message;
             }
         }
     }

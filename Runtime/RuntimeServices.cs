@@ -5,31 +5,36 @@ namespace MiSideMultiplayer
 {
     internal sealed class RuntimeServices : IDisposable
     {
-        private readonly RpcDispatcher rpcDispatcher;
-        private readonly NetworkManager networkManager;
+        private readonly RpcDispatcher     rpcDispatcher;
+        private readonly NetworkManager    networkManager;
         private readonly LocalPlayerSampler localPlayerSampler;
         private readonly TcpRelayTransport relayTransport;
-        private readonly string localPlayerId;
+        private readonly MitaSampler       mitaSampler;
+        private readonly MitaController    mitaController;
+        private readonly string            localPlayerId;
 
         public RuntimeServices(
             Transform runtimeRoot,
-            string localPlayerId,
-            string displayName,
-            string[] visualRootCandidates,
-            string[] playerRootCandidates,
-            float snapshotSendRate,
-            float snapshotHeartbeatSeconds,
-            bool emitLocalSnapshots,
-            bool enableNetworking,
-            string serverHost,
-            int serverPort,
-            string roomName)
+            string    localPlayerId,
+            string    displayName,
+            string[]  visualRootCandidates,
+            string[]  playerRootCandidates,
+            float     snapshotSendRate,
+            float     snapshotHeartbeatSeconds,
+            bool      emitLocalSnapshots,
+            bool      enableNetworking,
+            string    serverHost,
+            int       serverPort,
+            string    roomName)
         {
             this.localPlayerId = localPlayerId;
 
-            rpcDispatcher = new RpcDispatcher();
-            networkManager = new NetworkManager(runtimeRoot);
+            rpcDispatcher      = new RpcDispatcher();
+            networkManager     = new NetworkManager(runtimeRoot);
             localPlayerSampler = new LocalPlayerSampler();
+            mitaSampler        = new MitaSampler();
+            mitaController     = new MitaController();
+
             relayTransport = new TcpRelayTransport(
                 rpcDispatcher,
                 localPlayerId,
@@ -38,11 +43,17 @@ namespace MiSideMultiplayer
                 serverPort,
                 enableNetworking);
 
+            // Configure Mita systems
+            mitaController.Configure(localPlayerId);
+            mitaSampler.Configure(rpcDispatcher, localPlayerId, snapshotSendRate * 0.5f);
+
+            // Configure network manager with Mita controller
             networkManager.Configure(
                 rpcDispatcher,
                 visualRootCandidates,
                 playerRootCandidates,
-                localPlayerId);
+                localPlayerId,
+                mitaController);
 
             localPlayerSampler.Configure(
                 rpcDispatcher,
@@ -54,6 +65,10 @@ namespace MiSideMultiplayer
                 emitLocalSnapshots);
 
             relayTransport.Start();
+
+            DiagnosticLog.Info(
+                "RuntimeServices started. LocalPlayerId='" + localPlayerId +
+                "'  DisplayName='" + displayName + "'");
         }
 
         public void Tick()
@@ -62,6 +77,13 @@ namespace MiSideMultiplayer
             rpcDispatcher.Tick();
             networkManager.Tick();
             localPlayerSampler.Tick();
+            mitaSampler.Tick();
+            mitaController.Tick();
+        }
+
+        public void LateTick()
+        {
+            networkManager.LateTick();
         }
 
         public void Dispose()
