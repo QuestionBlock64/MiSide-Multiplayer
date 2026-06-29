@@ -44,9 +44,13 @@ As this is the first multiplayer implementation for MiSide, community testing is
 As this is the first multiplayer implementation for MiSide, community testing is invaluable. Because this is an experimental release, it is highly prone to uncatalogued bugs and synchronization limits that are not listed above.
 
 If you encounter any undocumented bugs, crashes, or issues, please open a new Issue on this GitHub repository. Provide as much detail as possible, including any relevant console logs and the exact steps to reproduce the error.
-Contact & Support
+
+## Contact & Support
 
 For direct feedback, inquiries regarding maximum player count stability, or further assistance regarding the modification, you can reach out directly:
+
+* Discord: QB64 (you must send a friend request, however i may not be accepting so this option may or may not work)
+* Alternatively, you may join  my very own discord server: https://discord.gg/XCZ9rka9em
 
 ---
 *Developed by QuestionBlock64*
