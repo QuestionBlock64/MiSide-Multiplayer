@@ -39,7 +39,7 @@ Player names, visual customizations, and network settings are managed entirely w
 ## Testing and Feedback
 As this is the first multiplayer implementation for MiSide, community testing is invaluable. Further testing is required to determine the absolute maximum player count stability. Feedback on synchronization limits and bug reports are highly appreciated.
 
-##Bug Reporting & Issues
+## Bug Reporting & Issues
 
 As this is the first multiplayer implementation for MiSide, community testing is invaluable. Because this is an experimental release, it is highly prone to uncatalogued bugs and synchronization limits that are not listed above.
 
