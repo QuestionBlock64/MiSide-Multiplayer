@@ -8,7 +8,7 @@ namespace MiSideMultiplayer
         // ── Smoothing ──────────────────────────────────────────────────────────
         private const float PositionSmoothTime = 0.075f;
         private const float RotationLerpSpeed  = 18f;
-        private const float HeadLerpSpeed      = 22f;
+        private const float HeadLerpSpeed      = 24f;
         private const float TeleportDistance   = 7f;
 
         // ── Identity ───────────────────────────────────────────────────────────
@@ -17,69 +17,70 @@ namespace MiSideMultiplayer
         private GameObject gameObjectRef;
         private Transform  transformRef;
         private Transform  visualRoot;
+
+        // ── Animator ───────────────────────────────────────────────────────────
+        // May live on visualRoot or on a sibling at the puppet-root level
+        // (mirrors how PlayerMove.animPerson works in the original game).
         private Animator   animator;
 
-        // ── Head rotation ──────────────────────────────────────────────────────
-        // headBone: the actual bone inside the Armature hierarchy that gets
-        // rotated in LateTick() AFTER the animator has run.  This is the only
-        // reliable way to override animator-driven bone transforms.
-        //
-        // Why not HeadMirror?  HeadMirror is a SkinnedMeshRenderer whose
-        // vertices deform from the BONES (Armature), not from rotating the
-        // HeadMirror transform itself.  Rotating the transform only moves the
-        // mesh root — it does not change head direction for the viewer.
-        //
-        // Why not HeadPlayer?  LookAtIK (which reads HeadPlayer) is removed by
-        // SanitizeVisualClone.  Without the IK running, HeadPlayer's rotation
-        // has no effect on the actual head bones.
-        //
-        // Solution: find the real head bone via FindHeadBone(), then in
-        // LateTick() override its local X (pitch) AFTER the animator updates.
+        // ── HeadMirror (Person/HeadMirror confirmed by dump string literals) ──
         private Transform  headBone;
         private Quaternion targetHeadRotation = Quaternion.identity;
-        private float      headPitchSmoothed;  // degrees, smoothed in LateTick
+        private float      headPitchSmoothed;
 
-        // ── DEV orb ────────────────────────────────────────────────────────────
+        // ── Debug orb ──────────────────────────────────────────────────────────
         private Transform  debugOrbRoot;
 
         // ── Name tag ───────────────────────────────────────────────────────────
         private Transform  nameTagRoot;
         private TextMesh   nameTagMesh;
 
-        // ── Fallback capsule ───────────────────────────────────────────────────
+        // ── Fallback capsule body (when clone has 0 renderers) ─────────────────
         private Transform  devMarkerRoot;
         private bool       showFallbackMarker;
 
         // ── Snapshot ───────────────────────────────────────────────────────────
         private Vector3           targetPosition;
-        private Quaternion        targetRotation = Quaternion.identity;
+        private Quaternion        targetRotation  = Quaternion.identity;
         private Vector3           smoothVelocity;
         private RemotePlayerState latestState;
         private bool              hasSnapshot;
-        private string            lastAction;
+
+        // ── Animation ─────────────────────────────────────────────────────────
+        // SIMPLIFIED: previously we manually mirrored the remote Animator's
+        // exact state via Animator.Play(stateHash, 0, normalizedTime) every
+        // tick, followed by animator.Update(0f) to force-apply it. That is a
+        // LOT of moving parts (hash matching, drift thresholds, manual time
+        // advancement) and was the prime suspect for animation freezing at
+        // the first frame — if anything in that chain misfired silently
+        // (e.g. Play() throwing after the first successful call, or drift
+        // calculation stalling), animator.Update(0f) would keep re-applying
+        // the SAME frame forever, since deltaTime=0 always means "don't
+        // advance."
+        //
+        // Back to basics: we just feed the CONFIRMED parameters every tick
+        // (Forward/Right/Walk/Run/Move + whatever synced bools/floats/ints
+        // arrive) and let Unity's own Animator component update itself
+        // completely normally, the same way it does for the local player.
+        // We never call animator.Update() ourselves during Tick() — Unity's
+        // engine loop already calls it automatically for every active,
+        // enabled Animator every frame. The authored state machine (idle/
+        // walk/run/sit transitions) does the rest, exactly like it does for
+        // the real player.
 
         // ── Coordinate log throttle ────────────────────────────────────────────
         private float nextCoordLogTime;
         private const float CoordLogInterval = 3f;
 
-        // ── MiSide animator parameter hashes (from IL2CPP dump string literals) ─
-        private static readonly int HashSpeedForward  = Animator.StringToHash("SpeedForward");
-        private static readonly int HashInertionRight = Animator.StringToHash("InertionRight");
-        private static readonly int HashHeadMove      = Animator.StringToHash("HeadMove");
-        private static readonly int HashMouseSpeed    = Animator.StringToHash("MouseSpeed");
-        private static readonly int HashForward       = Animator.StringToHash("Forward");
-        private static readonly int HashWalk          = Animator.StringToHash("Walk");
-        private static readonly int HashRun           = Animator.StringToHash("Run");
-        private static readonly int HashIdle          = Animator.StringToHash("Idle");
-        private static readonly int HashSit           = Animator.StringToHash("Sit");
-        private static readonly int HashJump          = Animator.StringToHash("Jump");
-        private static readonly int HashJumpStop      = Animator.StringToHash("JumpStop");
-        private static readonly int HashBedSit        = Animator.StringToHash("BedSit");
-        private static readonly int HashKickSit       = Animator.StringToHash("KickSit");
-        private static readonly int HashOtherAnimType = Animator.StringToHash("OtherAnimationType");
-        private static readonly int HashOtherAnimHold = Animator.StringToHash("OtherAnimationHold");
-        private static readonly int HashAnimStop      = Animator.StringToHash("animstop");
-        private static readonly int HashFaceLayer     = Animator.StringToHash("facelayer");
+        // ── Confirmed MiSide animator parameters (stringliteral.json) ──────────
+        // "SpeedForward","InertionRight","HeadMove","MouseSpeed","JumpStop",
+        // "BedSit","KickSit","OtherAnimationType","OtherAnimationHold",
+        // "animstop","facelayer" never appeared in the dump — removed.
+        private static readonly int HashForward = Animator.StringToHash("Forward");
+        private static readonly int HashRight   = Animator.StringToHash("Right");
+        private static readonly int HashWalk    = Animator.StringToHash("Walk");
+        private static readonly int HashRun     = Animator.StringToHash("Run");
+        private static readonly int HashMove    = Animator.StringToHash("Move");
 
         public GameObject GameObject { get { return gameObjectRef; } }
 
@@ -103,34 +104,22 @@ namespace MiSideMultiplayer
             animator = FindAnimator(visualRoot, transformRef);
             LogAnimatorStatus();
 
-            if (animator != null)
-            {
-                try { animator.applyRootMotion = false; } catch (Exception) { }
-
-                // NOTE: Rebind() is intentionally NOT called.
-                // In IL2CPP context, Rebind() resets the animator to an unbound
-                // state and requires a manual Play() call to restart.  Omitting
-                // it lets the freshly-instantiated clone start in its entry state
-                // (idle) automatically, which is what we want.
-
-                // Force one evaluation at time 0 to set initial pose.
-                try { animator.Update(0f); } catch (Exception) { }
-            }
-
             // ── Head bone ─────────────────────────────────────────────────────
-            // Find the real Armature head bone so LateTick() can override its
-            // local pitch AFTER the animator has run each frame.
-            headBone = FindHeadBone(visualRoot);
+            // Target the real Armature bone directly. HeadMirror is deliberately
+            // NOT used here — it's a SkinnedMeshRenderer (the mirror-reflection
+            // head mesh); its own Transform plays no part in how the mesh
+            // deforms, so rotating it is a visual no-op. Only a bone inside the
+            // bones[] array that the renderer actually reads has any effect.
+            headBone = visualRoot != null ? FindHeadBone(visualRoot) : null;
             if (headBone != null)
                 DiagnosticLog.Info(
-                    "Head bone for '" + playerId + "': " +
+                    "Head bone bound for '" + playerId + "': " +
                     LocalPlayerLocator.GetPath(headBone));
-            else
+            else if (visualRoot != null)
                 DiagnosticLog.Warning(
-                    "No head bone found in clone for '" + playerId +
-                    "'. Head rotation will not be applied.");
+                    "No head bone found for '" + playerId + "' — head will not track look direction.");
 
-            // ── Debug orb ─────────────────────────────────────────────────────
+            // ── DEV orb (always visible above puppet) ──────────────────────────
             EnsureDebugOrb();
 
             // ── Name tag ──────────────────────────────────────────────────────
@@ -140,7 +129,18 @@ namespace MiSideMultiplayer
             if (showFallbackMarker)
                 EnsureDevMarker();
 
-            DiagnosticLog.Info("Puppet bind complete for '" + playerId + "'.");
+            // ── Animator init ──────────────────────────────────────────────────
+            if (animator != null)
+            {
+                // AlwaysAnimate so the puppet updates even when off-screen.
+                // applyRootMotion = false so the puppet doesn't drift from
+                // the network-driven position.
+                animator.cullingMode     = AnimatorCullingMode.AlwaysAnimate;
+                animator.updateMode      = AnimatorUpdateMode.Normal;
+                animator.applyRootMotion = false;
+                try { animator.Rebind(); }   catch (Exception) { }
+                try { animator.Update(0f); } catch (Exception) { }
+            }
         }
 
         // ── Visibility ─────────────────────────────────────────────────────────
@@ -157,38 +157,31 @@ namespace MiSideMultiplayer
         {
             if (state == null) return;
             latestState        = state;
-            targetPosition     = state.position.ToUnity();
-            targetRotation     = Norm(state.rotation.ToUnity());
-            targetHeadRotation = Norm(state.headRotation.ToUnity());
+            targetPosition      = state.position.ToUnity();
+            targetRotation      = Norm(state.rotation.ToUnity());
+            targetHeadRotation  = Norm(state.headRotation.ToUnity());
 
             if (!hasSnapshot)
             {
                 transformRef.SetPositionAndRotation(targetPosition, targetRotation);
                 smoothVelocity = Vector3.zero;
                 hasSnapshot    = true;
-
-                DiagnosticLog.Info(
-                    "First snapshot for '" + playerId + "'" +
-                    "  pos=(" + targetPosition.x.ToString("F2") + ", " +
-                               targetPosition.y.ToString("F2") + ", " +
-                               targetPosition.z.ToString("F2") + ")" +
-                    "  scene=" + (state.sceneName ?? "?"));
+                // Head bone pose isn't applied here — it needs the Animator to
+                // have run at least once first (see LateTick/ApplyHeadRotation).
             }
         }
 
-        // ── Update tick (called from Update) ───────────────────────────────────
+        // ── Per-frame tick ──────────────────────────────────────────────────────
         public void Tick()
         {
             if (!hasSnapshot) return;
 
-            // Body position
+            // ── Body position ──────────────────────────────────────────────────
             float dist = Vector3.Distance(transformRef.position, targetPosition);
             if (dist > TeleportDistance)
             {
                 transformRef.position = targetPosition;
                 smoothVelocity        = Vector3.zero;
-                DiagnosticLog.Info(
-                    "Puppet '" + playerId + "' teleported (" + dist.ToString("F1") + "u).");
             }
             else
             {
@@ -197,18 +190,27 @@ namespace MiSideMultiplayer
                     ref smoothVelocity, PositionSmoothTime);
             }
 
-            // Body rotation
+            // ── Body rotation ──────────────────────────────────────────────────
             float rotT = 1f - Mathf.Exp(-RotationLerpSpeed * Time.deltaTime);
-            transformRef.rotation =
-                Quaternion.Slerp(transformRef.rotation, targetRotation, rotT);
+            transformRef.rotation = Quaternion.Slerp(
+                transformRef.rotation, targetRotation, rotT);
 
-            // Animator parameters
-            UpdateAnimator();
+            // ── Animator ──────────────────────────────────────────────────────
+            if (animator != null && latestState != null)
+                UpdateAnimator();
 
-            // Name tag billboard
+            // NOTE: head bone rotation is NOT applied here. Tick() runs during
+            // Update(), which happens BEFORE the Animator evaluates this frame's
+            // pose — any bone rotation written here gets silently overwritten
+            // the moment the Animator runs, later the same frame. It must be
+            // written in LateTick() (after LateUpdate, once the Animator has
+            // already posed every bone) to actually stick. This was the root
+            // cause of the head never visibly moving.
+
+            // ── Name tag billboard ─────────────────────────────────────────────
             UpdateNameTagFacing();
 
-            // Coordinate log
+            // ── Periodic coordinate log ────────────────────────────────────────
             if (Time.unscaledTime >= nextCoordLogTime)
             {
                 nextCoordLogTime = Time.unscaledTime + CoordLogInterval;
@@ -216,51 +218,53 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── LateUpdate tick (called from LateUpdate, AFTER animator) ──────────
-        // The Animator updates bones during the physics/animation pass that
-        // precedes LateUpdate (for AnimatorUpdateMode.Normal).  Overriding bone
-        // rotations here therefore persists for the frame instead of being
-        // immediately overwritten by the next animator evaluation.
         public void LateTick()
         {
-            if (!hasSnapshot || headBone == null) return;
+            ApplyHeadRotation(Time.deltaTime);
+            UpdateNameTagFacing();
+        }
 
-            // Extract the body-relative pitch (up/down angle) from the received
-            // head rotation.  targetHeadRotation is HeadPlayer's WORLD rotation
-            // (sampled from the remote player's HeadPlayer sibling), which
-            // encodes both the body's yaw AND the camera's pitch.
-            // Removing the body yaw leaves us with just the local pitch.
-            Quaternion relativeHead = Quaternion.Inverse(transformRef.rotation) * targetHeadRotation;
-            float pitch = relativeHead.eulerAngles.x;
-            if (pitch > 180f) pitch -= 360f;  // normalise to [-180, 180]
-            pitch = Mathf.Clamp(pitch, -80f, 80f);
+        // Overrides ONLY the head bone's local PITCH (X axis) after the Animator
+        // has posed the skeleton this frame, so idle head-sway (Y/Z) authored by
+        // the animator survives while up/down look direction comes from the
+        // remote player's camera.
+        //
+        // IMPORTANT: this targets headBone — the actual Armature bone
+        // (Person/Armature/.../Head) — never HeadMirror. HeadMirror is a
+        // SkinnedMeshRenderer; its own Transform is not read by the skinning
+        // system at all (mesh deformation comes entirely from the bones[]
+        // array), so rotating HeadMirror itself is visually a no-op. This is
+        // also why HeadPlayer/FixHead must never be rotated here — they are
+        // camera-rig / IK-target transforms with no skinning role either.
+        private void ApplyHeadRotation(float deltaTime)
+        {
+            if (headBone == null || !hasSnapshot) return;
 
-            // Smooth the pitch so jerky network updates don't snap the head
-            float headT = 1f - Mathf.Exp(-HeadLerpSpeed * Time.deltaTime);
+            Quaternion relativeToBody = Quaternion.Inverse(transformRef.rotation) * targetHeadRotation;
+            float pitch = relativeToBody.eulerAngles.x;
+            if (pitch > 180f) pitch -= 360f;
+            pitch = Mathf.Clamp(pitch, -75f, 75f);
+
+            float headT = 1f - Mathf.Exp(-HeadLerpSpeed * deltaTime);
             headPitchSmoothed = Mathf.Lerp(headPitchSmoothed, pitch, headT);
 
-            // Apply ONLY the X (pitch) axis; preserve Y and Z that the animator
-            // baked in (keeps idle head-sway / look-around animations intact).
             Vector3 cur = headBone.localRotation.eulerAngles;
             headBone.localRotation = Quaternion.Euler(headPitchSmoothed, cur.y, cur.z);
         }
 
-        // ── Animator ───────────────────────────────────────────────────────────
+        // ── Animator update ─────────────────────────────────────────────────────
         private void UpdateAnimator()
         {
-            if (animator == null || latestState == null) return;
+            // Drive the confirmed locomotion parameters from velocity.
+            SetF(HashForward, latestState.speed);
+            SetF(HashRight,   latestState.lateralSpeed);
+            SetB(HashWalk,    latestState.speed > 0.05f);
+            SetB(HashRun,     latestState.speed > 3.2f);
+            SetB(HashMove,    latestState.speed > 0.05f);
 
-            // Drive known MiSide parameters from speed/lateralSpeed
-            SetF(HashSpeedForward,  latestState.speed);
-            SetF(HashInertionRight, latestState.lateralSpeed);
-            SetF(HashForward,       latestState.speed);
-
-            // Always keep animstop = false on the puppet.
-            // The local player may be in a cutscene (animstop=true) while the
-            // puppet should still animate normally.
-            SetB(HashAnimStop, false);
-
-            // Apply all synced params received from the remote player
+            // Apply synced parameters from the remote state (this is where
+            // "Sit" and anything else the remote's own animator reports comes
+            // through — see LocalPlayerSampler.FillKnownAnimatorParams).
             if (latestState.floatParameters != null)
                 for (int i = 0; i < latestState.floatParameters.Length; i++)
                     SetF(Animator.StringToHash(latestState.floatParameters[i].name),
@@ -268,13 +272,8 @@ namespace MiSideMultiplayer
 
             if (latestState.boolParameters != null)
                 for (int i = 0; i < latestState.boolParameters.Length; i++)
-                {
-                    string pname = latestState.boolParameters[i].name;
-                    // Never let the remote animstop override our forced-false above
-                    if (string.Equals(pname, "animstop", StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    SetB(Animator.StringToHash(pname), latestState.boolParameters[i].value);
-                }
+                    SetB(Animator.StringToHash(latestState.boolParameters[i].name),
+                         latestState.boolParameters[i].value);
 
             if (latestState.intParameters != null)
                 for (int i = 0; i < latestState.intParameters.Length; i++)
@@ -285,122 +284,43 @@ namespace MiSideMultiplayer
             if (latestState.blendWeights != null)
             {
                 int n = Mathf.Min(latestState.blendWeights.Length, animator.layerCount);
-                for (int i = 1; i < n; i++)   // skip layer 0 — its weight is always 1
+                for (int i = 0; i < n; i++)
+                {
                     try { animator.SetLayerWeight(i, latestState.blendWeights[i]); }
                     catch (Exception) { }
-            }
-
-            // Cross-fade to named action state
-            if (!string.IsNullOrEmpty(latestState.action) && latestState.action != lastAction)
-            {
-                int h = Animator.StringToHash(latestState.action);
-                try
-                {
-                    if (animator.HasState(0, h))
-                    {
-                        animator.CrossFadeInFixedTime(h, 0.08f);
-                        lastAction = latestState.action;
-                    }
-                }
-                catch (Exception) { }
-            }
-        }
-
-        private void SetF(int h, float v) { try { animator.SetFloat(h, v);   } catch (Exception) { } }
-        private void SetB(int h, bool  v) { try { animator.SetBool(h, v);    } catch (Exception) { } }
-        private void SetI(int h, int   v) { try { animator.SetInteger(h, v); } catch (Exception) { } }
-
-        // ── Head bone search ───────────────────────────────────────────────────
-        // Known rig paths from IL2CPP dump + bone name fallback.
-        // When cloning Player (not just Person), paths must start below the
-        // Person child, so we prepend "Person/" variants too.
-        private static readonly string[] HeadBonePaths =
-        {
-            "Person/Armature/Hips/Spine/Chest/Neck2/Neck1/Head",
-            "Person/Armature/Hips/Spine/Chest/Neck1/Head",
-            "Person/Armature/Hips/Spine/Chest/Neck/Head",
-            "Armature/Hips/Spine/Chest/Neck2/Neck1/Head",
-            "Armature/Hips/Spine/Chest/Neck1/Head",
-            "Armature/Hips/Spine/Chest/Neck/Head",
-        };
-
-        private static readonly string[] HeadBoneNames =
-        {
-            "Head", "head", "Neck1", "Neck", "HeadBone", "Bip001 Head",
-        };
-
-        private static Transform FindHeadBone(Transform root)
-        {
-            if (root == null) return null;
-
-            for (int i = 0; i < HeadBonePaths.Length; i++)
-            {
-                Transform t = root.Find(HeadBonePaths[i]);
-                if (t != null) return t;
-            }
-
-            for (int i = 0; i < HeadBoneNames.Length; i++)
-            {
-                Transform t = FindByName(root, HeadBoneNames[i]);
-                if (t != null) return t;
-            }
-            return null;
-        }
-
-        // ── Animator search ────────────────────────────────────────────────────
-        private static Animator FindAnimator(Transform visualRoot, Transform puppetRoot)
-        {
-            if (visualRoot != null)
-            {
-                Animator a = visualRoot.GetComponentInChildren<Animator>(true);
-                if (a != null) return a;
-            }
-            if (puppetRoot != null)
-            {
-                for (int i = 0; i < puppetRoot.childCount; i++)
-                {
-                    Transform child = puppetRoot.GetChild(i);
-                    if (child == null || child == visualRoot) continue;
-                    Animator a = child.GetComponentInChildren<Animator>(true);
-                    if (a != null) return a;
                 }
             }
-            return null;
+
+            // NOTE: no manual animator.Play()/animator.Update() call here.
+            // Unity calls Update() on every active, enabled Animator
+            // automatically every engine frame — exactly like it does for the
+            // real player's own Animator. The parameters set above drive the
+            // authored state machine's own transitions (idle → walk → run,
+            // etc.) completely normally.
         }
 
-        private static Transform FindByName(Transform root, string targetName)
-        {
-            if (root == null) return null;
-            if (string.Equals(root.name, targetName, StringComparison.OrdinalIgnoreCase))
-                return root;
-            for (int i = 0; i < root.childCount; i++)
-            {
-                Transform r = FindByName(root.GetChild(i), targetName);
-                if (r != null) return r;
-            }
-            return null;
-        }
+        private void SetF(int h, float v) { try { animator.SetFloat(h, v); }   catch(Exception){} }
+        private void SetB(int h, bool  v) { try { animator.SetBool(h, v); }    catch(Exception){} }
+        private void SetI(int h, int   v) { try { animator.SetInteger(h, v); } catch(Exception){} }
 
         // ── Debug orb ──────────────────────────────────────────────────────────
         private void EnsureDebugOrb()
         {
             if (debugOrbRoot != null) return;
-
-            GameObject root = new GameObject("DEV_Player2Orb_" + playerId);
-            root.transform.SetParent(transformRef, false);
-            root.transform.localPosition = new Vector3(0f, 2.4f, 0f);
-            debugOrbRoot = root.transform;
-
-            MakeOrbSphere(root.transform, "OuterOrb",
+            GameObject r = new GameObject("DEV_Player2Orb_" + playerId);
+            r.transform.SetParent(transformRef, false);
+            r.transform.localPosition = new Vector3(0f, 2.4f, 0f);
+            r.transform.localScale    = Vector3.one;
+            debugOrbRoot = r.transform;
+            MakeOrbSphere(r.transform, "OuterOrb",
                 new Color(0f, 0.85f, 1f, 0.92f), new Vector3(0.32f, 0.32f, 0.32f));
-            MakeOrbSphere(root.transform, "InnerCore",
-                new Color(0.75f, 0.97f, 1f, 1f), new Vector3(0.14f, 0.14f, 0.14f));
-
+            MakeOrbSphere(r.transform, "InnerCore",
+                new Color(0.75f, 0.97f, 1f, 1f),  new Vector3(0.14f, 0.14f, 0.14f));
             DiagnosticLog.Info("Debug orb created for '" + playerId + "'.");
         }
 
         private static void MakeOrbSphere(Transform parent, string label,
-                                          Color color, Vector3 scale)
+                                           Color color, Vector3 scale)
         {
             GameObject s = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             s.name = label;
@@ -410,37 +330,42 @@ namespace MiSideMultiplayer
             s.layer = 0;
             Collider c = s.GetComponent<Collider>();
             if (c != null) UnityEngine.Object.Destroy(c);
-            Renderer r = s.GetComponent<Renderer>();
-            if (r != null) { r.sharedMaterial = DevMat(color); r.enabled = true; }
+            Renderer rend = s.GetComponent<Renderer>();
+            if (rend != null)
+            {
+                Material m = DevMat(color);
+                if (m != null) rend.sharedMaterial = m;
+                rend.enabled = true;
+            }
         }
 
         // ── Name tag ───────────────────────────────────────────────────────────
         private void EnsureNameTag()
         {
             if (nameTagRoot != null) return;
-
             string label = string.IsNullOrEmpty(displayName) ? playerId : displayName;
-
-            GameObject tagObj = new GameObject("NameTag_" + playerId);
-            tagObj.transform.SetParent(transformRef, false);
-            tagObj.transform.localPosition = new Vector3(0f, 2.95f, 0f);
-            nameTagRoot = tagObj.transform;
-
+            GameObject tag = new GameObject("NameTag_" + playerId);
+            tag.transform.SetParent(transformRef, false);
+            tag.transform.localPosition = new Vector3(0f, 2.95f, 0f);
+            tag.transform.localScale    = Vector3.one;
+            nameTagRoot = tag.transform;
             try
             {
-                nameTagMesh               = tagObj.AddComponent<TextMesh>();
+                nameTagMesh               = tag.AddComponent<TextMesh>();
                 nameTagMesh.text          = label;
                 nameTagMesh.fontSize      = 56;
                 nameTagMesh.characterSize = 0.048f;
                 nameTagMesh.anchor        = TextAnchor.MiddleCenter;
                 nameTagMesh.alignment     = TextAlignment.Center;
                 nameTagMesh.color         = Color.white;
-                DiagnosticLog.Info("Name tag: '" + playerId + "' → \"" + label + "\".");
+                DiagnosticLog.Info(
+                    "Name tag '" + label + "' created for '" + playerId + "'.");
             }
             catch (Exception ex)
             {
                 DiagnosticLog.Warning(
-                    "TextMesh unavailable for '" + label + "': " + ex.Message);
+                    "TextMesh unavailable — name tag for '" + playerId +
+                    "' logged only: " + ex.Message);
                 nameTagMesh = null;
             }
         }
@@ -450,6 +375,47 @@ namespace MiSideMultiplayer
             if (nameTagRoot == null || Camera.main == null) return;
             nameTagRoot.rotation =
                 Camera.main.transform.rotation * Quaternion.Euler(0f, 180f, 0f);
+        }
+
+        // ── Fallback marker ────────────────────────────────────────────────────
+        private void EnsureDevMarker()
+        {
+            if (devMarkerRoot != null) return;
+            GameObject mr = new GameObject("DEV_Marker_" + playerId);
+            mr.transform.SetParent(transformRef, false);
+            mr.transform.localPosition = new Vector3(0f, 1.85f, 0f);
+            devMarkerRoot = mr.transform;
+
+            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            cap.name = "Body"; cap.transform.SetParent(devMarkerRoot, false);
+            cap.transform.localScale = new Vector3(0.35f, 0.7f, 0.35f); cap.layer = 0;
+            Collider cc = cap.GetComponent<Collider>();
+            if (cc != null) UnityEngine.Object.Destroy(cc);
+            Renderer cr = cap.GetComponent<Renderer>();
+            if (cr != null)
+            {
+                Material m = DevMat(new Color(0f, 1f, 0.35f, 0.9f));
+                if (m != null) cr.sharedMaterial = m;
+                cr.enabled = true;
+            }
+
+            GameObject hd = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            hd.name = "Head"; hd.transform.SetParent(devMarkerRoot, false);
+            hd.transform.localPosition = new Vector3(0f, 0.82f, 0f);
+            hd.transform.localScale    = new Vector3(0.42f, 0.42f, 0.42f); hd.layer = 0;
+            Collider hc = hd.GetComponent<Collider>();
+            if (hc != null) UnityEngine.Object.Destroy(hc);
+            Renderer hr = hd.GetComponent<Renderer>();
+            if (hr != null)
+            {
+                Material m = DevMat(new Color(1f, 0.1f, 0.85f, 0.95f));
+                if (m != null) hr.sharedMaterial = m;
+                hr.enabled = true;
+            }
+
+            DiagnosticLog.Warning(
+                "Fallback capsule marker created for '" + playerId +
+                "' (visual clone had 0 renderers).");
         }
 
         // ── Coordinate logger ──────────────────────────────────────────────────
@@ -463,52 +429,87 @@ namespace MiSideMultiplayer
                 "  z=" + p.z.ToString("F3") +
                 (latestState != null
                     ? "  scene=" + latestState.sceneName +
-                      "  spd=" + latestState.speed.ToString("F2")
+                      "  spd="   + latestState.speed.ToString("F2") +
+                      "  stateHash=" + latestState.animatorStateHash
                     : ""));
         }
 
-        // ── Fallback marker ────────────────────────────────────────────────────
-        private void EnsureDevMarker()
+        // ── Lookup helpers ─────────────────────────────────────────────────────
+        private static Animator FindAnimator(Transform visualRoot, Transform puppetRoot)
         {
-            if (devMarkerRoot != null) return;
+            if (visualRoot != null)
+            {
+                Animator a = visualRoot.GetComponentInChildren<Animator>(true);
+                if (a != null) return a;
+            }
+            if (puppetRoot != null)
+            {
+                for (int i = 0; i < puppetRoot.childCount; i++)
+                {
+                    Transform ch = puppetRoot.GetChild(i);
+                    if (ch == null || ch == visualRoot) continue;
+                    Animator a = ch.GetComponentInChildren<Animator>(true);
+                    if (a != null) return a;
+                }
+            }
+            return null;
+        }
 
-            GameObject mr = new GameObject("DEV_Marker_" + playerId);
-            mr.transform.SetParent(transformRef, false);
-            mr.transform.localPosition = new Vector3(0f, 1.85f, 0f);
-            devMarkerRoot = mr.transform;
+        // Dump rig path: Person/Armature/Hips/Spine/Chest/Neck2/Neck1/Head
+        private static readonly string[] HeadBonePaths =
+        {
+            "Person/Armature/Hips/Spine/Chest/Neck2/Neck1/Head",
+            "Armature/Hips/Spine/Chest/Neck2/Neck1/Head",
+            "Armature/Hips/Spine/Chest/Neck1/Head",
+            "Armature/Hips/Spine/Chest/Neck/Head",
+        };
+        private static readonly string[] HeadBoneNames =
+            { "Head", "head", "Neck1", "Neck", "HeadBone" };
 
-            GameObject cap = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            cap.name = "Body"; cap.transform.SetParent(devMarkerRoot, false);
-            cap.transform.localScale = new Vector3(0.35f, 0.7f, 0.35f); cap.layer = 0;
-            Collider cc = cap.GetComponent<Collider>(); if (cc != null) UnityEngine.Object.Destroy(cc);
-            Renderer cr = cap.GetComponent<Renderer>(); if (cr != null)
-            { cr.sharedMaterial = DevMat(new Color(0f,1f,0.35f,0.9f)); cr.enabled = true; }
+        private static Transform FindHeadBone(Transform root)
+        {
+            if (root == null) return null;
+            for (int i = 0; i < HeadBonePaths.Length; i++)
+            {
+                Transform t = root.Find(HeadBonePaths[i]);
+                if (t != null) return t;
+            }
+            for (int i = 0; i < HeadBoneNames.Length; i++)
+            {
+                Transform t = FindByNameRecursive(root, HeadBoneNames[i]);
+                if (t != null) return t;
+            }
+            return null;
+        }
 
-            GameObject hd = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            hd.name = "Head"; hd.transform.SetParent(devMarkerRoot, false);
-            hd.transform.localPosition = new Vector3(0f, 0.82f, 0f);
-            hd.transform.localScale    = new Vector3(0.42f, 0.42f, 0.42f); hd.layer = 0;
-            Collider hc = hd.GetComponent<Collider>(); if (hc != null) UnityEngine.Object.Destroy(hc);
-            Renderer hr = hd.GetComponent<Renderer>(); if (hr != null)
-            { hr.sharedMaterial = DevMat(new Color(1f,0.1f,0.85f,0.95f)); hr.enabled = true; }
-
-            DiagnosticLog.Warning("Fallback marker created for '" + playerId + "'.");
+        private static Transform FindByNameRecursive(Transform root, string targetName)
+        {
+            if (root == null) return null;
+            if (string.Equals(root.name, targetName,
+                              StringComparison.OrdinalIgnoreCase)) return root;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform r = FindByNameRecursive(root.GetChild(i), targetName);
+                if (r != null) return r;
+            }
+            return null;
         }
 
         private void LogAnimatorStatus()
         {
             if (animator != null)
                 DiagnosticLog.Info(
-                    "Animator for '" + playerId + "' at: " +
+                    "Animator for '" + playerId + "' at " +
                     LocalPlayerLocator.GetPath(animator.transform) +
                     "  ctrl=" + (animator.runtimeAnimatorController != null
                         ? animator.runtimeAnimatorController.name : "NULL"));
             else
                 DiagnosticLog.Warning(
-                    "No Animator for puppet '" + playerId + "'.");
+                    "No Animator for puppet '" + playerId +
+                    "'. Animation won't play. Check Person/model(Clone) has an Animator.");
         }
 
-        // ── Static helpers ─────────────────────────────────────────────────────
+        // ── Statics ────────────────────────────────────────────────────────────
         private static Material DevMat(Color color)
         {
             Shader sh = Shader.Find("Standard")
@@ -527,9 +528,7 @@ namespace MiSideMultiplayer
         }
 
         private static Quaternion Norm(Quaternion q)
-        {
-            return (q.x == 0f && q.y == 0f && q.z == 0f && q.w == 0f)
-                   ? Quaternion.identity : q;
-        }
+            => (q.x == 0f && q.y == 0f && q.z == 0f && q.w == 0f)
+               ? Quaternion.identity : q;
     }
 }

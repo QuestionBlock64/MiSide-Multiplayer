@@ -29,6 +29,10 @@ namespace MiSideMultiplayer
         {
             this.localPlayerId = localPlayerId;
 
+            // Soft-dependency bridge to MS_CustomModels: scan installed models,
+            // cache reflection handles.  Safe no-op if mod is not installed.
+            CustomModelBridge.TryInitialize();
+
             rpcDispatcher      = new RpcDispatcher();
             networkManager     = new NetworkManager(runtimeRoot);
             localPlayerSampler = new LocalPlayerSampler();

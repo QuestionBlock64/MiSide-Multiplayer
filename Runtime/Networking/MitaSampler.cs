@@ -156,11 +156,13 @@ namespace MiSideMultiplayer
                 try
                 {
                     // animator.parameters returns Il2CppReferenceArray<AnimatorControllerParameter>
-                    // which TypeLoadExceptions because AnimatorControllerParameter is a struct.
-                    // Use parameterCount + GetParameter(int) — confirmed in dump (not stripped).
-                    int paramCount = mitaAnimator.parameterCount;
+                    // which TypeLoadExceptions because AnimatorControllerParameter is a struct
+                    // and violates the Il2CppReferenceArray<T> reference-type constraint.
+                    // Use parameterCount + GetParameter(int) instead — confirmed present
+                    // in the IL2CPP dump (not stripped), unlike the .parameters property.
                     List<AnimatorFloatParam> floats = new List<AnimatorFloatParam>();
                     List<AnimatorBoolParam>  bools  = new List<AnimatorBoolParam>();
+                    int paramCount = mitaAnimator.parameterCount;
 
                     for (int i = 0; i < paramCount; i++)
                     {

@@ -1,18 +1,43 @@
+using System;
 using UnityEngine;
 
 namespace MiSideMultiplayer
 {
+    /// <summary>
+    /// Creates remote-puppet GameObjects by cloning the correct visual hierarchy.
+    ///
+    /// Visual-source priority (based on dump.cs analysis + observed runtime behaviour):
+    ///
+    ///  PRIORITY 1 — Named custom model sibling (e.g. "model(Clone)")
+    ///    The MS_CustomModels loader instantiates a self-contained VRM clone as a
+    ///    sibling of Person under GameController/Player.  Self-contained means it has
+    ///    its own bones + SkinnedMeshRenderers, so cloning that sibling alone is
+    ///    correct and gives the right visual immediately.
+    ///    NOTE: if the remote player also has a custom model we try ModelPuppet first.
+    ///    Only KNOWN names are matched (see CustomModelSiblingNames) — no generic
+    ///    "pick whichever sibling has a renderer" scan, since that previously
+    ///    misidentified small utility props (e.g. a door-handle mesh) as a model.
+    ///
+    ///  PRIORITY 2 — Player-level clone (DEFAULT SKIN PATH — always the fallback)
+    ///    The default body lives inside GameController/Player/Person:
+    ///      Person/Armature/Hips/... (skeleton)
+    ///      Person/HeadMirror / Person/HairMirror (SkinnedMeshRenderers)
+    ///      Person/* body meshes     (all disabled by PlayerMove.HideBody in FPP)
+    ///    Cloning the PLAYER parent directly (not just Person) captures everything
+    ///    in one hierarchy, including HeadPlayer which HeadMirror needs.
+    ///    ForceRenderersVisible() re-enables every renderer hidden by HideBody().
+    ///    We then shift the Player clone so Person lands at the puppet root's origin.
+    /// </summary>
     public sealed class PuppetFactory
     {
         private readonly Transform puppetParent;
         private string[] visualRootCandidates = new string[0];
 
-        // Sibling names to probe at the Player level (GameController/Player/???)
-        // "model(Clone)" is what appears in Image 1's hierarchy under Player.
-        private static readonly string[] ModelSiblingNames =
+        // Sibling names to probe at the Player level for a custom model.
+        private static readonly string[] CustomModelSiblingNames =
         {
             "model(Clone)", "model", "Model", "PlayerModel",
-            "Body", "Character", "Visuals", "Mesh",
+            "Body",         "Character", "Visuals", "Mesh",
         };
 
         public PuppetFactory(Transform parent)
@@ -25,130 +50,87 @@ namespace MiSideMultiplayer
             visualRootCandidates = candidates ?? new string[0];
         }
 
-        public PuppetController Create(string playerId, string displayName, Transform localPlayerRoot)
+        public PuppetController Create(string playerId, string displayName,
+                                       Transform localPlayerRoot,
+                                       string    remoteCustomModelName = null)
         {
             if (localPlayerRoot == null)
             {
-                DiagnosticLog.Error("Cannot create puppet for '" + playerId + "': localPlayerRoot is null.");
+                DiagnosticLog.Error(
+                    "Cannot create puppet for '" + playerId + "': localPlayerRoot is null.");
                 return null;
             }
 
-            // ── 1. Try well-known siblings of Person at the Player level ──────
-            // Skeleton is inside Person (Person/Armature/Hips confirmed in dump),
-            // but model(Clone) may hold additional skinned meshes / the animator.
-            Transform sourceVisualRoot = null;
-            bool      preserveOffset   = true;
+            Transform personRoot;
+            Transform playerLevel = ResolvePlayerLevel(localPlayerRoot, out personRoot);
+            bool localRootIsPlayerLevel = playerLevel == localPlayerRoot;
 
-            Transform playerParent = localPlayerRoot.parent; // GameController/Player
-            if (playerParent != null)
-            {
-                // Named sibling search
-                for (int i = 0; i < ModelSiblingNames.Length; i++)
-                {
-                    Transform sibling = playerParent.Find(ModelSiblingNames[i]);
-                    if (sibling == null || sibling == localPlayerRoot) continue;
-                    if (VisualCloneUtility.CountRenderers(sibling) > 0)
-                    {
-                        sourceVisualRoot = sibling;
-                        preserveOffset   = false; // model is at Player level, no offset needed
-                        DiagnosticLog.Info(
-                            "Visual source found as Player-level sibling '" +
-                            sibling.name + "': " + LocalPlayerLocator.GetPath(sibling));
-                        break;
-                    }
-                }
-
-                // If not found by name, scan all siblings for any that have renderers
-                if (sourceVisualRoot == null)
-                {
-                    int bestCount = 0;
-                    for (int i = 0; i < playerParent.childCount; i++)
-                    {
-                        Transform child = playerParent.GetChild(i);
-                        if (child == null || child == localPlayerRoot) continue;
-                        int n = VisualCloneUtility.CountRenderers(child);
-                        if (n > bestCount)
-                        {
-                            bestCount        = n;
-                            sourceVisualRoot = child;
-                            preserveOffset   = false;
-                        }
-                    }
-                    if (sourceVisualRoot != null)
-                        DiagnosticLog.Info(
-                            "Visual source found via sibling scan: '" +
-                            sourceVisualRoot.name + "' (" +
-                            VisualCloneUtility.CountRenderers(sourceVisualRoot) + " renderers).");
-                }
-            }
-
-            // ── 2. Try inside localPlayerRoot (Person) itself ─────────────────
-            if (sourceVisualRoot == null)
-            {
-                sourceVisualRoot = LocalPlayerLocator.FindVisualRoot(
-                    localPlayerRoot, visualRootCandidates);
-                if (sourceVisualRoot != null)
-                {
-                    preserveOffset = true;
-                    DiagnosticLog.Info(
-                        "Visual source found inside Person: " +
-                        LocalPlayerLocator.GetPath(sourceVisualRoot));
-                }
-            }
-
-            // ── 2b. Person itself has renderers — clone Player (its parent) ───
-            // The default MiSide character keeps all meshes (Arms, Clothes,
-            // HeadMirror, HairMirror) as direct children of Person, not as
-            // Player-level siblings.  Cloning Person alone loses HeadPlayer
-            // (which is HeadMirror's rootBone, causing the headless puppet).
-            // Cloning Player captures everything with correct bone references.
-            // Person is at local (0,0,0) in Player so world offset is zero.
-            if (sourceVisualRoot == null && localPlayerRoot.parent != null
-                && VisualCloneUtility.CountRenderers(localPlayerRoot) > 0)
-            {
-                sourceVisualRoot = localPlayerRoot.parent;   // GameController/Player
-                preserveOffset   = false;
-                DiagnosticLog.Info(
-                    "Visual source: Person has " +
-                    VisualCloneUtility.CountRenderers(localPlayerRoot) +
-                    " renderer(s) inside it — cloning Player parent '" +
-                    sourceVisualRoot.name + "' to include HeadPlayer/HeadMirror rootBone.");
-            }
-
-            // ── 3. Broad scene scan fallback ──────────────────────────────────
-            if (sourceVisualRoot == null)
-            {
-                preserveOffset   = false;
-                sourceVisualRoot = LocalPlayerLocator.FindBestSceneVisualRoot(visualRootCandidates);
-                if (sourceVisualRoot != null)
-                    DiagnosticLog.Warning(
-                        "Visual source found via broad scene scan: " +
-                        LocalPlayerLocator.GetPath(sourceVisualRoot) +
-                        " — this may be the wrong model.");
-            }
-
-            if (sourceVisualRoot == null)
+            if (playerLevel == null)
             {
                 DiagnosticLog.Error(
                     "Cannot create puppet for '" + playerId +
-                    "': no visual source found (tried Player siblings, Person, scene scan).");
+                    "': could not resolve GameController/Player from local root '" +
+                    LocalPlayerLocator.GetPath(localPlayerRoot) + "'.");
                 return null;
             }
 
-            // ── Build puppet root ─────────────────────────────────────────────
+            // Build puppet root first so we can pass it to ModelPuppet if needed.
             GameObject root = new GameObject("RemotePuppet_" + Sanitize(playerId));
             if (puppetParent != null)
                 root.transform.SetParent(puppetParent, false);
 
             PuppetController controller = new PuppetController(root);
 
+            // ── Try MS_CustomModels ModelPuppet API first ─────────────────────
+            // If the remote player has a custom model AND ModelPuppet is available,
+            // delegate the visual entirely to MS_CustomModels.  Fall through if this
+            // fails so the standard clone path still produces something.
+            bool modelPuppetApplied = false;
+            if (!string.IsNullOrEmpty(remoteCustomModelName) &&
+                remoteCustomModelName != "None")
+            {
+                DiagnosticLog.Info(
+                    "Puppet '" + playerId + "' — remote custom model: '" +
+                    remoteCustomModelName + "'. Attempting ModelPuppet load.");
+                modelPuppetApplied =
+                    CustomModelBridge.TryApplyModelToPuppet(root, remoteCustomModelName);
+            }
+
+            // ── If ModelPuppet handled it, skip the clone entirely ─────────────
+            if (modelPuppetApplied)
+            {
+                // ModelPuppet takes over; just bind with no cloned visual.
+                // showFallbackMarker = false — ModelPuppet supplies the visual.
+                controller.Bind(playerId, displayName, null, false);
+                DiagnosticLog.Info(
+                    "Puppet '" + playerId + "' visual delegated to ModelPuppet.");
+                PuppetSafety.ValidateVisualOnly(root);
+                return controller;
+            }
+
+            // ── Standard clone path ───────────────────────────────────────────
+            Transform sourceVisualRoot;
+            bool      preserveOffset;
+            SelectVisualSource(personRoot, playerLevel,
+                               out sourceVisualRoot, out preserveOffset);
+
+            if (sourceVisualRoot == null)
+            {
+                DiagnosticLog.Error(
+                    "Cannot create puppet for '" + playerId +
+                    "': no visual source found (Player siblings, Player-level clone," +
+                    " scene scan all failed).");
+                UnityEngine.Object.Destroy(root);
+                return null;
+            }
+
             // ── Clone visual ──────────────────────────────────────────────────
-            Transform visualClone = VisualCloneUtility.InstantiateVisualOnlyHierarchy(
-                sourceVisualRoot, localPlayerRoot, root.transform, preserveOffset);
+            Transform visualClone =
+                VisualCloneUtility.InstantiateVisualOnlyHierarchy(
+                    sourceVisualRoot, localPlayerRoot, root.transform, preserveOffset);
 
             if (visualClone == null)
             {
-                // Manual clone fallback
                 visualClone = VisualCloneUtility.CloneVisualOnlyHierarchy(
                     sourceVisualRoot, root.transform);
                 if (preserveOffset)
@@ -156,8 +138,17 @@ namespace MiSideMultiplayer
                         sourceVisualRoot, localPlayerRoot, visualClone);
                 else
                     VisualCloneUtility.PlaceCloneAtPuppetRoot(sourceVisualRoot, visualClone);
-
                 VisualCloneUtility.ForceRenderersVisible(visualClone);
+            }
+
+            // ── Align Player-level clone so Person sits at puppet root ─────────
+            if (!localRootIsPlayerLevel &&
+                !preserveOffset &&
+                sourceVisualRoot == playerLevel &&
+                visualClone != null &&
+                personRoot != null)
+            {
+                AlignPlayerCloneToPersonRoot(visualClone, personRoot.name);
             }
 
             int renderers = VisualCloneUtility.CountRenderers(visualClone);
@@ -169,11 +160,177 @@ namespace MiSideMultiplayer
 
             if (renderers == 0)
                 DiagnosticLog.Warning(
-                    "Puppet visual clone for '" + playerId +
-                    "' has 0 renderers — will show fallback capsule.");
+                    "Puppet '" + playerId + "' has 0 renderers after clone. " +
+                    "Fallback capsule shown. Check SanitizeVisualClone log.");
+            else
+                LogRendererDiagnostics(playerId, visualClone);
 
             PuppetSafety.ValidateVisualOnly(root);
             return controller;
+        }
+
+        // ── Renderer diagnostics ────────────────────────────────────────────────
+        // Prints per-renderer enabled/layer/shadow/active state once per puppet.
+        // If a puppet is STILL invisible despite renderers > 0, this log dump
+        // pinpoints exactly which flag is wrong instead of requiring more guessing.
+        private static void LogRendererDiagnostics(string playerId, Transform visualClone)
+        {
+            try
+            {
+                Renderer[] renderers = visualClone.GetComponentsInChildren<Renderer>(true);
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                sb.Append("Renderer diagnostics for '" + playerId + "':\n");
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    Renderer r = renderers[i];
+                    if (r == null) continue;
+                    sb.Append("  [" + i + "] " + r.gameObject.name +
+                              "  enabled=" + r.enabled +
+                              "  activeInHierarchy=" + r.gameObject.activeInHierarchy +
+                              "  layer=" + r.gameObject.layer +
+                              "  shadowMode=" + r.shadowCastingMode +
+                              "  bounds=" + r.bounds.size.ToString("F2") + "\n");
+                }
+                DiagnosticLog.Info(sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Warning("LogRendererDiagnostics failed: " + ex.Message);
+            }
+        }
+
+        // ── Visual-source selection ───────────────────────────────────────────
+        private static Transform ResolvePlayerLevel(
+            Transform localPlayerRoot,
+            out Transform personRoot)
+        {
+            personRoot = null;
+            if (localPlayerRoot == null)
+                return null;
+
+            if (string.Equals(localPlayerRoot.name, "Player", StringComparison.OrdinalIgnoreCase))
+            {
+                personRoot = localPlayerRoot.Find("Person");
+                return localPlayerRoot;
+            }
+
+            if (string.Equals(localPlayerRoot.name, "Person", StringComparison.OrdinalIgnoreCase))
+            {
+                personRoot = localPlayerRoot;
+                return localPlayerRoot.parent;
+            }
+
+            Transform person = localPlayerRoot.Find("Person");
+            if (person != null)
+            {
+                personRoot = person;
+                return localPlayerRoot;
+            }
+
+            personRoot = localPlayerRoot;
+            return localPlayerRoot.parent;
+        }
+
+        private static void SelectVisualSource(
+            Transform personRoot,
+            Transform playerLevel,
+            out Transform sourceVisualRoot,
+            out bool      preserveOffset)
+        {
+            sourceVisualRoot = null;
+            preserveOffset   = false;
+
+            // ── PRIORITY 1: custom-model sibling at Player level ──────────────
+            // A VRM / custom skin loader instantiates a self-contained sibling
+            // (e.g. "model(Clone)") that has its own bones — clone it directly.
+            // NOTE: we only match KNOWN names here. An earlier "unnamed sibling
+            // scan" (pick whichever Player-level child has the most renderers)
+            // was removed — it could misidentify small utility props (e.g. a
+            // doorknob prop under "Hand Left Door") as "the model", which is
+            // the exact false-positive bug already found and fixed once in
+            // CustomModelBridge.DetectFromHierarchy. Simpler and more
+            // predictable: named match or straight to Priority 2.
+            for (int i = 0; i < CustomModelSiblingNames.Length; i++)
+            {
+                Transform sib = playerLevel.Find(CustomModelSiblingNames[i]);
+                if (sib == null || sib == personRoot) continue;
+                if (VisualCloneUtility.CountRenderers(sib) > 0)
+                {
+                    sourceVisualRoot = sib;
+                    DiagnosticLog.Info(
+                        "Visual source: named custom model sibling '" + sib.name + "'.");
+                    return;
+                }
+            }
+
+            // ── PRIORITY 2: clone from Player level (default skin path) ───────
+            // The default MiSide body lives inside Person (HeadMirror, HairMirror,
+            // body meshes).  FindVisualRoot() historically found only HeadMirror
+            // (the first SMR inside Person), giving a headless puppet.
+            // Cloning the full Player parent captures everything:
+            //   • Person/Armature/... (skeleton — correct bone references)
+            //   • Person/HeadMirror, Person/HairMirror (mirror-visibility meshes)
+            //   • Person/* body meshes (re-enabled by ForceRenderersVisible)
+            //   • HeadPlayer (camera rig — camera removed by sanitise)
+            sourceVisualRoot = playerLevel;
+            preserveOffset   = false;
+            DiagnosticLog.Info(
+                "Visual source: Player level '" + playerLevel.name +
+                "' (default skin — direct clone of Player, full skeleton + body meshes).");
+        }
+
+        // ── Person-alignment helper ───────────────────────────────────────────
+        /// <summary>
+        /// After cloning GameController/Player, find the Person child inside the
+        /// clone and offset the clone root so Person lands at (0,0,0) of the puppet.
+        /// </summary>
+        private static void AlignPlayerCloneToPersonRoot(
+            Transform playerClone, string personName)
+        {
+            if (playerClone == null) return;
+
+            Transform personInClone = null;
+
+            // Direct child search first (fastest)
+            for (int i = 0; i < playerClone.childCount; i++)
+            {
+                Transform ch = playerClone.GetChild(i);
+                if (ch != null &&
+                    string.Equals(ch.name, personName, StringComparison.OrdinalIgnoreCase))
+                {
+                    personInClone = ch;
+                    break;
+                }
+            }
+
+            // Deep fallback
+            if (personInClone == null)
+                personInClone = FindByName(playerClone, personName);
+
+            if (personInClone != null)
+            {
+                Vector3 offset = personInClone.localPosition;
+                if (offset.sqrMagnitude > 0.0001f)
+                {
+                    playerClone.localPosition = -offset;
+                    DiagnosticLog.Info(
+                        "AlignPlayerClone: Person offset " + offset +
+                        " compensated → clone moved to " + playerClone.localPosition);
+                }
+            }
+        }
+
+        private static Transform FindByName(Transform root, string name)
+        {
+            if (root == null) return null;
+            if (string.Equals(root.name, name, StringComparison.OrdinalIgnoreCase))
+                return root;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform r = FindByName(root.GetChild(i), name);
+                if (r != null) return r;
+            }
+            return null;
         }
 
         private static string Sanitize(string value)

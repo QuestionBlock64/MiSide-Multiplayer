@@ -12,11 +12,12 @@ namespace MiSideMultiplayer
     {
         // ── Hardcoded target ────────────────────────────────────────────────────
         /// <summary>
-        /// The one and only path we look for.  Backslash is the display form;
+        /// The one and only root path we look for.  Backslash is the display form;
         /// forward-slash is what Unity's Transform.Find / GameObject.Find want.
         /// </summary>
-        public const string HardcodedPlayerPathDisplay = "GameController\\Player\\Person";
-        public const string HardcodedPlayerPathUnity   = "GameController/Player/Person";
+        public const string HardcodedPlayerPathDisplay = "GameController\\Player";
+        public const string HardcodedPlayerPathUnity   = "GameController/Player";
+        public const string HardcodedPersonPathDisplay = "GameController\\Player\\Person";
 
         // ── Legacy candidate arrays kept for visual-root helpers ────────────────
         private static readonly string[] FallbackVisualRootCandidates =
@@ -60,7 +61,7 @@ namespace MiSideMultiplayer
         // ── Primary hardcoded lookup ────────────────────────────────────────────
 
         /// <summary>
-        /// Looks for the single hard-coded path GameController/Player/Person.
+        /// Looks for the single hard-coded path GameController/Player.
         /// Works even if the target object is inactive.
         /// </summary>
         public static Transform FindHardcodedPlayerPath()
@@ -83,7 +84,11 @@ namespace MiSideMultiplayer
 
                 if (string.Equals(roots[i].name, "GameController", StringComparison.OrdinalIgnoreCase))
                 {
-                    Transform found = roots[i].transform.Find("Player/Person");
+                    Transform found = roots[i].transform.Find("Player");
+                    if (found != null)
+                        return found;
+
+                    found = roots[i].transform.Find("Player/Person");
                     if (found != null)
                         return found;
                 }
