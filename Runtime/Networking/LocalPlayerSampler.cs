@@ -20,6 +20,7 @@ namespace MiSideMultiplayer
         private float nextSendTime;
         private float nextHeartbeatTime;
         private float nextErrorLogTime;
+        private float nextGroundTruthLogTime;
         private int   tick;
 
         // ── Cached state ──────────────────────────────────────────────────────
@@ -124,6 +125,30 @@ namespace MiSideMultiplayer
                 }
 
                 RemotePlayerState state = BuildState(localRoot);
+
+                // Ground-truth diagnostic: read Forward/Right straight off the
+                // LOCAL animator, completely independent of our own sampling
+                // pipeline. If THIS is also 0.000 while genuinely walking, the
+                // problem is upstream of us entirely — either "Forward" isn't
+                // the real locomotion parameter name, or it lives on a
+                // DIFFERENT animator than the one we're reading (MiSide has at
+                // least two on PlayerMove: animPerson (main body) and
+                // animArmsFace (arm/face overlay) — PlayerArmsHead's own
+                // animForward/animRight fields may belong to the overlay one).
+                if (Time.unscaledTime >= nextGroundTruthLogTime && cachedAnimator != null)
+                {
+                    nextGroundTruthLogTime = Time.unscaledTime + 3f;
+                    float gtForward = 0f, gtRight = 0f;
+                    try { gtForward = cachedAnimator.GetFloat(HashForward); } catch (Exception) { }
+                    try { gtRight   = cachedAnimator.GetFloat(HashRight);   } catch (Exception) { }
+                    DiagnosticLog.Info(
+                        "  [ground-truth local] animator='" + LocalPlayerLocator.GetPath(cachedAnimator.transform) +
+                        "'  ctrl='" + (cachedAnimator.runtimeAnimatorController != null
+                                       ? cachedAnimator.runtimeAnimatorController.name : "NULL") + "'" +
+                        "  Forward=" + gtForward.ToString("F3") +
+                        "  Right="   + gtRight.ToString("F3") +
+                        "  computedSpeed=" + state.speed.ToString("F3"));
+                }
 
                 bool heartbeatDue = Time.unscaledTime >= nextHeartbeatTime;
                 if (!HasMeaningfulChange(state, lastSentState) && !heartbeatDue)
@@ -314,6 +339,26 @@ namespace MiSideMultiplayer
 
         private static Animator FindBestAnimator(Transform playerRoot, Transform personRoot)
         {
+            // PREFER Person's own animator. This is where the base game's real
+            // locomotion logic lives (PlayerMove.animForward/animRight feed
+            // it directly) — confirmed to have a real controller and to
+            // correctly enter/progress states. A custom-model sibling
+            // ("model(Clone)") is PURELY COSMETIC — MS_CustomModels swaps
+            // appearance, not gameplay logic — and its Animator, if it even
+            // has one, may have NO runtimeAnimatorController assigned at all.
+            // Checking siblings first (the old order) meant that whenever the
+            // LOCAL player had any custom model loaded, we'd silently lock
+            // onto that uncontrolled Animator and read Forward/Right as 0
+            // forever, regardless of real movement — no controller means no
+            // parameter could ever exist to read.
+            Animator personAnim = personRoot != null
+                ? personRoot.GetComponentInChildren<Animator>(true)
+                : null;
+            if (personAnim != null && personAnim.runtimeAnimatorController != null)
+                return personAnim;
+
+            // Fallback: Player-level siblings (only reached if Person genuinely
+            // has no controlled animator at all — shouldn't normally happen).
             if (playerRoot != null)
             {
                 for (int i = 0; i < playerRoot.childCount; i++)
@@ -325,16 +370,16 @@ namespace MiSideMultiplayer
                     if (VisualCloneUtility.CountRenderers(child) <= 0) continue;
 
                     Animator siblingAnimator = child.GetComponentInChildren<Animator>(true);
-                    if (siblingAnimator != null)
+                    if (siblingAnimator != null && siblingAnimator.runtimeAnimatorController != null)
                         return siblingAnimator;
                 }
             }
 
-            Animator anim = personRoot != null
-                ? personRoot.GetComponentInChildren<Animator>(true)
-                : null;
-            if (anim != null)
-                return anim;
+            // Last resort: whatever Person has, even without a controller
+            // (better than nothing — keeps state-hash sync attempts running
+            // rather than never finding an Animator at all).
+            if (personAnim != null)
+                return personAnim;
 
             return playerRoot != null
                 ? playerRoot.GetComponentInChildren<Animator>(true)
@@ -466,9 +511,22 @@ namespace MiSideMultiplayer
                 // Real, live parameter list for THIS animator — works correctly
                 // for both the default body and custom VRM models, whatever
                 // their actual parameter names turn out to be.
+                //
+                // CAUTION: dp.name comes from AnimatorControllerParameter.name,
+                // read through IL2CPP interop. We already have direct evidence
+                // elsewhere in this project that .name on IL2CPP-wrapped
+                // objects can come back empty/mangled (runtimeAnimatorController
+                // .name and avatar.name both logged as '' in testing) — if the
+                // SAME marshaling issue affects parameter names, a discovered
+                // "Forward" entry would be stored under a mangled name, hash to
+                // something completely unrelated to HashForward, and the
+                // puppet-side SetF would silently never touch the real
+                // parameter — exactly matching "ground-truth Forward changes,
+                // but liveForward on the puppet never does."
                 for (int i = 0; i < discoveredParams.Count; i++)
                 {
                     DiscoveredParam dp = discoveredParams[i];
+                    if (string.IsNullOrEmpty(dp.name)) continue;   // mangled — skip, don't transmit garbage
                     if (dp.type == AnimatorControllerParameterType.Float)
                         TryAddF(anim, dp.name, dp.hash, floats);
                     else if (dp.type == AnimatorControllerParameterType.Bool)
@@ -483,14 +541,21 @@ namespace MiSideMultiplayer
                 // Enumeration itself threw for this animator (confirmed case:
                 // MiSide's own IL2CPP-stripped base game controller). Fall back
                 // to the small set confirmed present in stringliteral.json.
-                TryAddF(anim, "Forward", HashForward, floats);
-                TryAddF(anim, "Right",   HashRight,   floats);
                 TryAddB(anim, "Walk", HashWalk, bools);
                 TryAddB(anim, "Run",  HashRun,  bools);
                 TryAddB(anim, "Sit",  HashSit,  bools);
                 TryAddB(anim, "Move", HashMove, bools);
                 TryAddB(anim, "Idle", HashIdle, bools);
             }
+
+            // Forward/Right ALWAYS captured here explicitly, unconditionally,
+            // using OUR OWN hardcoded C# string literals — never read from an
+            // IL2CPP object, so never subject to the marshaling risk above.
+            // Appended LAST so they overwrite (via the puppet-side apply loop,
+            // which processes the array in order) any earlier duplicate that
+            // discovery might have added under a corrupted name/hash.
+            TryAddF(anim, "Forward", HashForward, floats);
+            TryAddF(anim, "Right",   HashRight,   floats);
 
             // Layer weights
             int layerCount = Mathf.Min(anim.layerCount, 8);
@@ -518,6 +583,7 @@ namespace MiSideMultiplayer
                 int count = anim.parameterCount;
                 if (count <= 0) { discoverySucceeded = false; return; }
 
+                int mangledCount = 0;
                 for (int i = 0; i < count; i++)
                 {
                     AnimatorControllerParameter p = anim.GetParameter(i);
@@ -527,7 +593,18 @@ namespace MiSideMultiplayer
                     dp.hash = Animator.StringToHash(p.name);
                     dp.type = p.type;
                     discoveredParams.Add(dp);
+                    if (string.IsNullOrEmpty(p.name)) mangledCount++;
                 }
+
+                if (mangledCount > 0)
+                    DiagnosticLog.Warning(
+                        "Animator parameter discovery: " + mangledCount + " of " +
+                        discoveredParams.Count + " parameter name(s) came back empty " +
+                        "(IL2CPP string marshaling issue on AnimatorControllerParameter.name — " +
+                        "same class of issue as runtimeAnimatorController.name/avatar.name " +
+                        "returning '' elsewhere). Those entries are dropped rather than " +
+                        "transmitted under a broken name; Forward/Right are always captured " +
+                        "separately via a hardcoded literal regardless of this.");
 
                 discoverySucceeded = discoveredParams.Count > 0;
 
@@ -543,7 +620,8 @@ namespace MiSideMultiplayer
                     for (int i = 0; i < discoveredParams.Count; i++)
                     {
                         if (i > 0) sb.Append(", ");
-                        sb.Append(discoveredParams[i].name);
+                        sb.Append(string.IsNullOrEmpty(discoveredParams[i].name)
+                                  ? "<empty-name>" : discoveredParams[i].name);
                         sb.Append('[');
                         sb.Append(discoveredParams[i].type);
                         sb.Append(']');
@@ -614,6 +692,22 @@ namespace MiSideMultiplayer
             float dt  = Mathf.Max(Time.deltaTime, 0.0001f);
             Vector3 v = (currentPos - lastPosition) / dt;
             lastPosition = currentPos;
+
+            // Deadzone: we derive velocity by DIFFERENTIATING position, unlike
+            // the game's own animator input which comes straight from keyboard
+            // axes (exactly 0 when no key is pressed). Differentiating a noisy
+            // signal amplifies that noise — dividing a sub-centimetre jitter
+            // (network precision, physics micro-settling, SmoothDamp overshoot)
+            // by a small deltaTime alone can read as "0.05-0.15 m/s of motion"
+            // even while standing perfectly still, which was enough to trip a
+            // naive isWalking threshold constantly. Zero it out below a floor
+            // comfortably above that noise ceiling but far below real walking
+            // speed (~1.4-2 m/s), so a truly stationary player reads as exactly
+            // zero rather than "a little bit walking."
+            const float velocityDeadzone = 0.18f;
+            if (v.sqrMagnitude < velocityDeadzone * velocityDeadzone)
+                v = Vector3.zero;
+
             return v;
         }
 

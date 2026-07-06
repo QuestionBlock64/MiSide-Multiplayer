@@ -73,14 +73,12 @@ namespace MiSideMultiplayer
         private const float CoordLogInterval = 3f;
 
         // ── Confirmed MiSide animator parameters (stringliteral.json) ──────────
-        // "SpeedForward","InertionRight","HeadMove","MouseSpeed","JumpStop",
-        // "BedSit","KickSit","OtherAnimationType","OtherAnimationHold",
-        // "animstop","facelayer" never appeared in the dump — removed.
+        // Forward/Right are real float parameters (PlayerMove.animForward/
+        // animRight). Walk/Run/Move are NOT independently-settable bool
+        // parameters — see the comment in UpdateAnimator for why they were
+        // removed from here.
         private static readonly int HashForward = Animator.StringToHash("Forward");
         private static readonly int HashRight   = Animator.StringToHash("Right");
-        private static readonly int HashWalk    = Animator.StringToHash("Walk");
-        private static readonly int HashRun     = Animator.StringToHash("Run");
-        private static readonly int HashMove    = Animator.StringToHash("Move");
 
         public GameObject GameObject { get { return gameObjectRef; } }
 
@@ -120,7 +118,7 @@ namespace MiSideMultiplayer
                     "No head bone found for '" + playerId + "' — head will not track look direction.");
 
             // ── DEV orb (always visible above puppet) ──────────────────────────
-            EnsureDebugOrb();
+            // EnsureDebugOrb();
 
             // ── Name tag ──────────────────────────────────────────────────────
             EnsureNameTag();
@@ -132,14 +130,96 @@ namespace MiSideMultiplayer
             // ── Animator init ──────────────────────────────────────────────────
             if (animator != null)
             {
-                // AlwaysAnimate so the puppet updates even when off-screen.
-                // applyRootMotion = false so the puppet doesn't drift from
-                // the network-driven position.
+                // Diagnostic: state IMMEDIATELY as found, before we touch anything.
+                // If this is ALREADY hash:0 here, the clone itself came out of
+                // Instantiate()/Sanitize in a broken state (e.g. the Animator
+                // destroy+restore safety net in VisualCloneUtility producing an
+                // incompletely-initialised replacement) — a different bug than
+                // anything we do below. If it's valid HERE but hash:0 by the
+                // time Tick() logs it later, our own setup below is the culprit.
+                LogAnimatorStateProbe("as-found (pre-setup)");
+
+                animator.enabled         = true;   // defensive — should already be true
                 animator.cullingMode     = AnimatorCullingMode.AlwaysAnimate;
                 animator.updateMode      = AnimatorUpdateMode.Normal;
                 animator.applyRootMotion = false;
-                try { animator.Rebind(); }   catch (Exception) { }
+
+                // NOTE: Rebind() intentionally NOT called. Rebind() exists for
+                // avatar-SWAP scenarios (replacing the skeleton/avatar an
+                // Animator is already bound to) — Object.Instantiate() already
+                // clones and binds the Animator+Avatar+Controller correctly as
+                // part of a normal clone, with no extra step required. Calling
+                // Rebind() here was a "just in case" precaution that may have
+                // been leaving the state machine un-entered in IL2CPP specifically.
                 try { animator.Update(0f); } catch (Exception) { }
+
+                LogAnimatorStateProbe("after-setup (post Update(0f))");
+                RunParameterSentinelTest();
+            }
+        }
+
+        // Definitive test: can SetFloat/GetFloat even round-trip a value on
+        // THIS specific cloned Animator instance at all? An obvious value
+        // (12345) that could never occur naturally makes the result
+        // unambiguous. Tests both the int-hash overload (what UpdateAnimator
+        // actually uses every tick) and the string overload directly, to
+        // rule out any possibility of a hash mismatch between where we set
+        // vs where we read (both should be impossible given HashForward is a
+        // single static field, but this removes all doubt either way).
+        private void RunParameterSentinelTest()
+        {
+            const float sentinel = 12345f;
+            try
+            {
+                animator.SetFloat(HashForward, sentinel);
+                float viaHash = animator.GetFloat(HashForward);
+
+                animator.SetFloat("Forward", sentinel + 1f);
+                float viaString = animator.GetFloat("Forward");
+
+                DiagnosticLog.Info(
+                    "  [sentinel test] '" + playerId + "'" +
+                    "  set " + sentinel + " via hash → read back " + viaHash.ToString("F1") +
+                    "  |  set " + (sentinel + 1f) + " via string \"Forward\" → read back " + viaString.ToString("F1") +
+                    "  " + (Mathf.Approximately(viaHash, sentinel)
+                            ? "ROUND-TRIP OK (SetFloat/GetFloat work — bug must be elsewhere, e.g. something else overwriting it between UpdateAnimator and the log read)"
+                            : "ROUND-TRIP FAILED (SetFloat has NO EFFECT on this parameter for this Animator instance — 'Forward' is being silently rejected, most likely because the clone's actual assigned controller doesn't define a parameter with this name/hash at all, despite appearing to elsewhere)"));
+
+                // Reset to a neutral value so the sentinel doesn't linger and
+                // confuse the very next real UpdateAnimator() call this frame.
+                animator.SetFloat(HashForward, 0f);
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Warning(
+                    "  [sentinel test] threw for '" + playerId + "': " + ex.Message);
+            }
+        }
+
+        // One-off diagnostic snapshot of the Animator's actual current state.
+        // hash:0 + t=0.00 means the state machine has never been entered at
+        // all (no controller, or genuinely never started) — NOT "stuck on idle."
+        private void LogAnimatorStateProbe(string label)
+        {
+            try
+            {
+                AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
+                DiagnosticLog.Info(
+                    "  [animator probe: " + label + "] '" + playerId + "'" +
+                    "  enabled=" + animator.enabled +
+                    "  activeInHierarchy=" + animator.gameObject.activeInHierarchy +
+                    "  ctrl=" + (animator.runtimeAnimatorController != null
+                                 ? animator.runtimeAnimatorController.name : "NULL") +
+                    "  avatar=" + (animator.avatar != null
+                                 ? (animator.avatar.name + " valid=" + animator.avatar.isValid + " human=" + animator.avatar.isHuman)
+                                 : "NULL") +
+                    "  stateHash=" + info.shortNameHash +
+                    "  normalizedTime=" + info.normalizedTime.ToString("F3"));
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Warning(
+                    "  [animator probe: " + label + "] failed for '" + playerId + "': " + ex.Message);
             }
         }
 
@@ -169,6 +249,20 @@ namespace MiSideMultiplayer
                 // Head bone pose isn't applied here — it needs the Animator to
                 // have run at least once first (see LateTick/ApplyHeadRotation).
             }
+
+            // NOTE: no manual animator.Play()/state-hash mirroring here anymore.
+            // That mechanism existed to work around the Animator never holding
+            // a valid state at all — which turned out to be caused by
+            // Animator.Rebind() in Bind(), not by anything missing here. With
+            // Rebind() removed and FindBestAnimator now correctly reading
+            // Person's real, controlled animator (previously it could lock
+            // onto an uncontrolled custom-model sibling and read Forward as
+            // permanently 0), the Animator holds a valid state on its own and
+            // MiSide's locomotion is very likely one continuous blend-tree
+            // state driven purely by Forward/Right — it needs correct
+            // parameter VALUES, not discrete state-switching calls from us.
+            // UpdateAnimator() feeds those every tick; that should be
+            // sufficient on its own now that both prerequisites are fixed.
         }
 
         // ── Per-frame tick ──────────────────────────────────────────────────────
@@ -255,12 +349,32 @@ namespace MiSideMultiplayer
         // ── Animator update ─────────────────────────────────────────────────────
         private void UpdateAnimator()
         {
-            // Drive the confirmed locomotion parameters from velocity.
+            // Seed Forward/Right from our own (deadzoned) computed velocity as a
+            // fallback in case sync data is briefly missing. These are REAL,
+            // confirmed float parameters (PlayerMove.animForward/animRight) —
+            // the synced floatParameters loop below overwrites them with the
+            // authoritative live values read directly off the remote's own
+            // animator, which is what should actually drive playback.
             SetF(HashForward, latestState.speed);
             SetF(HashRight,   latestState.lateralSpeed);
-            SetB(HashWalk,    latestState.speed > 0.05f);
-            SetB(HashRun,     latestState.speed > 3.2f);
-            SetB(HashMove,    latestState.speed > 0.05f);
+
+            // Deliberately NOT setting Walk/Run/Move bools here anymore.
+            // "Walk"/"Run"/"Sit"/"Idle" (stringliteral.json) are almost
+            // certainly animation STATE names reached via blend-tree
+            // thresholds on Forward/Right inside the controller graph, not
+            // independently settable bool parameters — PlayerMove's own
+            // fields (canRun/needRun/animationRun/animationFast) are internal
+            // C# script state, not 1:1 animator parameters. Since there is no
+            // real "Walk" parameter, nothing in the synced boolParameters list
+            // could ever correct a guessed value here, so a naive
+            // speed > 0.05f threshold was the ONLY thing driving puppet
+            // locomotion — and since our velocity is derived by
+            // differentiating position (noisy) rather than read from clean
+            // keyboard input (exact zero when idle), it was almost always
+            // "a little bit walking." Feeding the real, correctly-synced
+            // Forward/Right into the SAME authored graph the real player uses
+            // lets it decide idle vs walk vs run exactly the way it already
+            // does for the real player — no re-derivation needed.
 
             // Apply synced parameters from the remote state (this is where
             // "Sit" and anything else the remote's own animator reports comes
@@ -422,6 +536,47 @@ namespace MiSideMultiplayer
         private void LogCoordinates()
         {
             Vector3 p = transformRef.position;
+
+            string liveInfo = "";
+            if (animator != null)
+            {
+                float liveForward = 0f;
+                string stateName = "?";
+                try { liveForward = animator.GetFloat(HashForward); } catch (Exception) { }
+                try
+                {
+                    AnimatorStateInfo info = animator.GetCurrentAnimatorStateInfo(0);
+                    stateName = "hash:" + info.shortNameHash + " t=" + info.normalizedTime.ToString("F2");
+                }
+                catch (Exception) { }
+                liveInfo = "  liveForward=" + liveForward.ToString("F3") + "  animState=" + stateName;
+            }
+
+            // Raw received parameters — exactly what the SENDER reported, before
+            // anything on our side interprets/applies it. If "Forward" never
+            // appears here at all, the problem is on the sending side (either
+            // discovery isn't finding a real "Forward" param on the sender's
+            // animator, or it belongs to a DIFFERENT animator than the one being
+            // sampled — MiSide has at least two: PlayerMove.animPerson (main
+            // body) and PlayerMove.animArmsFace (arm/face overlay) — the
+            // PlayerArmsHead.animForward/animRight fields may belong to the
+            // LATTER, not the body locomotion animator we're driving here).
+            string recvInfo = "  recv[";
+            if (latestState != null && latestState.floatParameters != null && latestState.floatParameters.Length > 0)
+            {
+                for (int i = 0; i < latestState.floatParameters.Length; i++)
+                {
+                    if (i > 0) recvInfo += ",";
+                    recvInfo += latestState.floatParameters[i].name + "=" +
+                                latestState.floatParameters[i].value.ToString("F2");
+                }
+            }
+            else
+            {
+                recvInfo += "EMPTY";
+            }
+            recvInfo += "]";
+
             DiagnosticLog.Info(
                 "Player2 [" + playerId + "]" +
                 "  x=" + p.x.ToString("F3") +
@@ -429,14 +584,39 @@ namespace MiSideMultiplayer
                 "  z=" + p.z.ToString("F3") +
                 (latestState != null
                     ? "  scene=" + latestState.sceneName +
-                      "  spd="   + latestState.speed.ToString("F2") +
-                      "  stateHash=" + latestState.animatorStateHash
-                    : ""));
+                      "  syncedSpd=" + latestState.speed.ToString("F2")
+                    : "") +
+                liveInfo + recvInfo);
         }
 
         // ── Lookup helpers ─────────────────────────────────────────────────────
         private static Animator FindAnimator(Transform visualRoot, Transform puppetRoot)
         {
+            // PREFER Person's own animator explicitly, by name — same fix as
+            // LocalPlayerSampler.FindBestAnimator on the sender side. A plain
+            // GetComponentInChildren<Animator>(true) search across the WHOLE
+            // cloned hierarchy can return ANY Animator it finds first — if the
+            // sender also has a custom model loaded on themselves, the clone
+            // contains BOTH Person's real, controlled locomotion animator AND
+            // a "model(Clone)" sibling's animator, and which one comes back
+            // depends on sibling order, not correctness. Person is where the
+            // base game's real locomotion parameters (Forward/Right) live.
+            if (visualRoot != null)
+            {
+                Transform personNode = visualRoot.name == "Person"
+                                        ? visualRoot
+                                        : visualRoot.Find("Person");
+                if (personNode != null)
+                {
+                    Animator personAnim = personNode.GetComponentInChildren<Animator>(true);
+                    if (personAnim != null && personAnim.runtimeAnimatorController != null)
+                        return personAnim;
+                }
+            }
+
+            // Fallback: generic search (custom-model-only clones have no
+            // "Person" node at all — whatever Animator model(Clone) has, if
+            // any, is the only option there; known separately broken/deferred).
             if (visualRoot != null)
             {
                 Animator a = visualRoot.GetComponentInChildren<Animator>(true);
