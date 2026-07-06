@@ -4,12 +4,12 @@
 The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. Currently, the modification has been tested for a two-player cooperative experience, with potential support for additional players pending further testing and development. 
 
 ## Current Limitations & Roadmap
-This modification is currently in active development. While the core connection framework is established and **default player animations are now fully synchronized**, the following features are actively being worked on to ensure a seamless experience:
-* **Environment Synchronization**: Ensuring world state changes are reflected across all clients.
-* **Mission Synchronization**: Shared objective tracking and completion.
-* **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states.
+This modification is currently in active development. While the core connection framework is established and **default player animations are now fully synchronized**, please be aware that the following features are **NOT yet synchronized** and are actively being worked on:
+* **Mita Synchronization**: Mita's behavioral states and interactions do not sync across connected clients.
+* **Environment Synchronization**: World state changes, triggers, and environmental updates are not reflected across all clients.
+* **Mission Synchronization**: Quest progression, objective tracking, and completion are not shared between players.
+* **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states is not yet supported.
 * **Custom Model Animations**: While the default player character animates correctly, imported custom models currently do not support animations and will appear to slide during movement.
-* **Mitas Synchronization**: Fully syncing Mitas states and interactions across connected clients.
 
 ## Installation & Setup
 
