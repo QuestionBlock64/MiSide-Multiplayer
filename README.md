@@ -4,11 +4,11 @@
 The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. Currently, the modification has been tested for a two-player cooperative experience, with potential support for additional players pending further testing and development. 
 
 ## Current Limitations & Roadmap
-This modification is currently in active development. While the core connection framework is established, the following features are actively being worked on to ensure a seamless experience:
+This modification is currently in active development. While the core connection framework is established and **default player animations are now fully synchronized**, the following features are actively being worked on to ensure a seamless experience:
 * **Environment Synchronization**: Ensuring world state changes are reflected across all clients.
 * **Mission Synchronization**: Shared objective tracking and completion.
 * **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states.
-* **Player Animations**: Implementing animation controllers for puppet players to resolve sliding during movement.
+* **Custom Model Animations**: While the default player character animates correctly, imported custom models currently do not support animations and will appear to slide during movement.
 * **Mitas Synchronization**: Fully syncing Mitas states and interactions across connected clients.
 
 ## Installation & Setup
@@ -50,7 +50,7 @@ If you encounter any undocumented bugs, crashes, or issues, please open a new Is
 For direct feedback, inquiries regarding maximum player count stability, or further assistance regarding the modification, you can reach out directly:
 
 * Discord: QB64 (you must send a friend request, however i may not be accepting so this option may or may not work)
-* Alternatively, you may join  my very own discord server: https://discord.gg/XCZ9rka9em
+* Alternatively, you may join my very own discord server: https://discord.gg/XCZ9rka9em
 
 ---
 *Developed by QuestionBlock64*
