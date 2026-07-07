@@ -18,7 +18,7 @@ This modification is currently in active development. While the core connection 
 * BepInEx framework installed in your game directory.
 
 ### Host Instructions
-1. Locate and execute `MiSideMultiplayerRelayServer.exe` to start the host server.
+1. Locate and execute `MiSideMultiplayerRelayServer.exe` to start the host server. (Get it from https://github.com/QuestionBlock64/MiSideMultiplayerServer)
 2. Ensure your local configuration file is set up with your preferred display name and customizations (see the Configuration section below).
 3. Provide your IP address to the connecting client. 
 *Security Notice: It is strongly advised not to share your raw public IP address. Instead, utilize a secure port forwarding service or a Virtual LAN software such as Hamachi, Radmin VPN, or ZeroTier.*
