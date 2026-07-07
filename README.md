@@ -31,11 +31,6 @@ This modification is currently in active development. While the core connection 
 5. Enter the Host's IP address in the designated IP field.
 6. Save the file and launch the game.
 
-## Configuration
-Player names, visual customizations, and network settings are managed entirely within the `com.miside.multiplayer.puppets.cfg` file. 
-* Both the Host and the Client must configure their respective names and customizations within this file.
-* Detailed explanations for every customizable parameter are documented directly inside the configuration file itself.
-
 ## Testing and Feedback
 As this is the first multiplayer implementation for MiSide, community testing is invaluable. Further testing is required to determine the absolute maximum player count stability. Feedback on synchronization limits and bug reports are highly appreciated.
 
