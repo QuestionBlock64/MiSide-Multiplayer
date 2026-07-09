@@ -1,7 +1,7 @@
 # MiSide Multiplayer Mod
 
 ## Overview
-The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. Currently, the modification has been tested for a two-player cooperative experience, with potential support for additional players pending further testing and development. 
+The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. Currently, the modification has been tested for a three-player cooperative experience, with potential support for more players.
 
 ## Current Limitations & Roadmap
 This modification is currently in active development. While the core connection framework is established and **default player animations are now fully synchronized**, please be aware that the following features are **NOT yet synchronized** and are actively being worked on:
