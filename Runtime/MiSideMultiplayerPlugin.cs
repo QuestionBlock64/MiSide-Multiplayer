@@ -38,7 +38,7 @@ namespace MiSideMultiplayer
             displayName = Config.Bind(
                 "Identity",
                 "DisplayName",
-                Environment.UserName,
+                "Player",
                 "Name sent with local snapshots.");
 
             visualRootCandidates = Config.Bind(
@@ -80,7 +80,7 @@ namespace MiSideMultiplayer
             snapshotSendRate = Config.Bind(
                 "Networking",
                 "SnapshotSendRate",
-                20f,
+                40f,
                 "Local state snapshots per second.");
 
             snapshotHeartbeatSeconds = Config.Bind(
@@ -169,9 +169,15 @@ namespace MiSideMultiplayer
 
         private static string CreateDefaultPlayerId()
         {
-            string machine = Environment.MachineName;
-            string user = Environment.UserName;
-            return machine + "_" + user;
+            // Only ever called once — the first time the config file is
+            // generated. BepInEx writes the returned value to disk and reuses
+            // that SAVED value on every future launch (Config.Bind's default
+            // is not re-evaluated once a key exists in the file), so this
+            // stays stable per-install without ever touching machine name or
+            // Windows username — neither of which belongs in something that
+            // gets broadcast to every other player and saved in a config file
+            // people might share.
+            return "Player_" + Guid.NewGuid().ToString("N").Substring(0, 8);
         }
 
         private static string[] SplitCsv(string value)

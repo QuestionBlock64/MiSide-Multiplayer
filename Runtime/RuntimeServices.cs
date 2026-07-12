@@ -5,13 +5,16 @@ namespace MiSideMultiplayer
 {
     internal sealed class RuntimeServices : IDisposable
     {
-        private readonly RpcDispatcher     rpcDispatcher;
-        private readonly NetworkManager    networkManager;
-        private readonly LocalPlayerSampler localPlayerSampler;
-        private readonly TcpRelayTransport relayTransport;
-        private readonly MitaSampler       mitaSampler;
-        private readonly MitaController    mitaController;
-        private readonly string            localPlayerId;
+        private readonly RpcDispatcher        rpcDispatcher;
+        private readonly NetworkManager       networkManager;
+        private readonly LocalPlayerSampler   localPlayerSampler;
+        private readonly TcpRelayTransport    relayTransport;
+        private readonly MitaSampler          mitaSampler;
+        private readonly MitaController       mitaController;
+        private readonly WorldDoorSync        worldDoorSync;
+        private readonly WorldStoryObjectSync worldStoryObjectSync;
+        private readonly BoneSync             boneSync;
+        private readonly string               localPlayerId;
 
         public RuntimeServices(
             Transform runtimeRoot,
@@ -29,15 +32,16 @@ namespace MiSideMultiplayer
         {
             this.localPlayerId = localPlayerId;
 
-            // Soft-dependency bridge to MS_CustomModels: scan installed models,
-            // cache reflection handles.  Safe no-op if mod is not installed.
             CustomModelBridge.TryInitialize();
 
-            rpcDispatcher      = new RpcDispatcher();
-            networkManager     = new NetworkManager(runtimeRoot);
-            localPlayerSampler = new LocalPlayerSampler();
-            mitaSampler        = new MitaSampler();
-            mitaController     = new MitaController();
+            rpcDispatcher        = new RpcDispatcher();
+            networkManager       = new NetworkManager(runtimeRoot);
+            localPlayerSampler   = new LocalPlayerSampler();
+            mitaSampler          = new MitaSampler();
+            mitaController       = new MitaController();
+            worldDoorSync        = new WorldDoorSync();
+            worldStoryObjectSync = new WorldStoryObjectSync();
+            boneSync             = new BoneSync();
 
             relayTransport = new TcpRelayTransport(
                 rpcDispatcher,
@@ -47,11 +51,13 @@ namespace MiSideMultiplayer
                 serverPort,
                 enableNetworking);
 
-            // Configure Mita systems
             mitaController.Configure(localPlayerId);
             mitaSampler.Configure(rpcDispatcher, localPlayerId, snapshotSendRate * 0.5f);
 
-            // Configure network manager with Mita controller
+            worldDoorSync.Configure(rpcDispatcher, localPlayerId);
+            worldStoryObjectSync.Configure(rpcDispatcher, localPlayerId);
+            boneSync.Configure(rpcDispatcher, localPlayerId);
+
             networkManager.Configure(
                 rpcDispatcher,
                 visualRootCandidates,
@@ -83,11 +89,15 @@ namespace MiSideMultiplayer
             localPlayerSampler.Tick();
             mitaSampler.Tick();
             mitaController.Tick();
+            worldDoorSync.Tick();
+            worldStoryObjectSync.Tick();
+            boneSync.Tick();
         }
 
         public void LateTick()
         {
             networkManager.LateTick();
+            boneSync.LateTick();
         }
 
         public void Dispose()
@@ -97,6 +107,7 @@ namespace MiSideMultiplayer
 
             relayTransport.Dispose();
             networkManager.Dispose();
+            boneSync.Dispose();
         }
     }
 }

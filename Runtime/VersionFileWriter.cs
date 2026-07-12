@@ -23,7 +23,7 @@ namespace MiSideMultiplayer
 
             string versionFile = Path.Combine(dataDirectory, "Version.txt");
             string text =
-                "MiSide Multiplayer Pre Release" + Environment.NewLine +
+                "MiSide Multiplayer DEV Test" + Environment.NewLine +
                 pluginName + Environment.NewLine +
                 "Version: " + pluginVersion + Environment.NewLine +
                 "Runtime: BepInEx 6 IL2CPP" + Environment.NewLine +
