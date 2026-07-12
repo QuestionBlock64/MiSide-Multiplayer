@@ -5,41 +5,28 @@ using UnityEngine.SceneManagement;
 
 namespace MiSideMultiplayer
 {
-    /// <summary>
-    /// Finds World/Mita in the active scene, samples her transform and animator
-    /// state, and broadcasts it via RpcDispatcher at a fixed rate.
-    ///
-    /// Authority: every connected player broadcasts Mita state. MitaController
-    /// applies incoming state only from the player with the lexicographically
-    /// smallest ID — so there's one consistent authority without explicit
-    /// host election.
-    /// </summary>
     public sealed class MitaSampler
     {
-        // ── Config ─────────────────────────────────────────────────────────────
         private RpcDispatcher rpcDispatcher;
         private string localPlayerId;
-        private float sendRate = 10f;       // Hz, lower than player rate
+        private float sendRate = 1f / 60f;
 
-        // ── Runtime ────────────────────────────────────────────────────────────
         private Transform mitaRoot;
-        private Animator  mitaAnimator;
+        private Transform mitaPerson;
         private float     nextSendTime;
         private float     nextFindTime;
         private string    lastSceneName;
-        private int       tick;
         private const float FindInterval = 4f;
+        private bool loggedMitaSearch;
 
-        // Known Mita sub-paths to try (World-relative)
         private static readonly string[] MitaSearchPaths =
         {
-            "Mita",                // World/Mita  (Image 2 confirms this)
+            "Mita",
             "General/Mita",
             "Mita/MitaPerson Mita",
             "MitaPerson Mita",
         };
 
-        // ── Configure ──────────────────────────────────────────────────────────
         public void Configure(RpcDispatcher dispatcher, string playerId, float rate)
         {
             rpcDispatcher = dispatcher;
@@ -47,42 +34,42 @@ namespace MiSideMultiplayer
             sendRate      = Mathf.Max(1f, rate);
         }
 
-        // ── Tick ───────────────────────────────────────────────────────────────
         public void Tick()
         {
             if (rpcDispatcher == null)
                 return;
 
-            // Re-search on scene change
             string sceneName = SceneManager.GetActiveScene().name;
             if (sceneName != lastSceneName)
             {
-                lastSceneName  = sceneName;
-                mitaRoot       = null;
-                mitaAnimator   = null;
-                nextFindTime   = 0f;
-                DiagnosticLog.Info("MitaSampler: scene changed to '" + sceneName + "', will re-search for Mita.");
+                lastSceneName = sceneName;
+                mitaRoot      = null;
+                mitaPerson    = null;
+                nextFindTime  = 0f;
+                loggedMitaSearch = false;
             }
 
-            // Periodic search
             if (mitaRoot == null && Time.unscaledTime >= nextFindTime)
             {
                 nextFindTime = Time.unscaledTime + FindInterval;
                 TryFindMita();
             }
 
-            if (mitaRoot == null)
+            if (mitaRoot == null || mitaPerson == null)
                 return;
 
-            // Send at configured rate
             if (Time.unscaledTime < nextSendTime)
                 return;
-
             nextSendTime = Time.unscaledTime + 1f / sendRate;
 
             try
             {
-                MitaState state = SampleMita();
+                MitaState state = new MitaState();
+                state.senderId  = localPlayerId;
+                state.sceneName = lastSceneName;
+                state.position  = NetVector3.FromUnity(mitaRoot.position);
+                state.rotation  = NetQuaternion.FromUnity(mitaRoot.rotation);
+                state.Bones     = SampleBones(mitaPerson);
                 rpcDispatcher.SendMitaState(state);
             }
             catch (Exception ex)
@@ -91,23 +78,58 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── Find Mita ──────────────────────────────────────────────────────────
         private void TryFindMita()
         {
             Scene scene = SceneManager.GetActiveScene();
-            if (!scene.IsValid() || !scene.isLoaded)
-                return;
+            if (!scene.IsValid() || !scene.isLoaded) return;
+
+            if (!loggedMitaSearch)
+            {
+                loggedMitaSearch = true;
+                // Dump all root objects to find Mita
+                GameObject[] allRoots = scene.GetRootGameObjects();
+                DiagnosticLog.Info("=== Mita search: " + allRoots.Length + " root objects in scene '" + scene.name + "' ===");
+                for (int i = 0; i < allRoots.Length; i++)
+                {
+                    DiagnosticLog.Info("  Root[" + i + "]: " + allRoots[i].name + " (active=" + allRoots[i].activeSelf + ")");
+                }
+
+                // Also dump World children if World exists
+                for (int i = 0; i < allRoots.Length; i++)
+                {
+                    if (allRoots[i].name == "World")
+                    {
+                        DiagnosticLog.Info("=== World children (" + allRoots[i].transform.childCount + ") ===");
+                        for (int j = 0; j < allRoots[i].transform.childCount; j++)
+                        {
+                            Transform child = allRoots[i].transform.GetChild(j);
+                            DiagnosticLog.Info("  World/" + child.name + " (active=" + child.gameObject.activeSelf + ")");
+                            // Dump Mita's children if found
+                            if (child.name.IndexOf("Mita", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                DumpHierarchy(child, "    ");
+                            }
+                        }
+                    }
+                }
+
+                // Direct GameObject.Find
+                GameObject directFind = GameObject.Find("Mita");
+                DiagnosticLog.Info("  GameObject.Find(\"Mita\"): " + (directFind != null ? "FOUND (active=" + directFind.activeSelf + ")" : "NULL"));
+                if (directFind != null)
+                {
+                    DumpHierarchy(directFind.transform, "    ");
+                }
+            }
 
             GameObject[] roots = scene.GetRootGameObjects();
 
-            // Primary: under the World root
             for (int r = 0; r < roots.Length; r++)
             {
                 if (!string.Equals(roots[r].name, "World", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 Transform worldRoot = roots[r].transform;
-
                 for (int s = 0; s < MitaSearchPaths.Length; s++)
                 {
                     Transform mita = worldRoot.Find(MitaSearchPaths[s]);
@@ -119,92 +141,70 @@ namespace MiSideMultiplayer
                 }
             }
 
-            // Fallback: GameObject.Find (active only)
             GameObject mitaGO = GameObject.Find("Mita");
             if (mitaGO != null)
             {
                 BindMita(mitaGO.transform);
                 return;
             }
+        }
 
-            DiagnosticLog.Warning(
-                "MitaSampler: Mita not found in scene '" + lastSceneName +
-                "'. Will retry in " + FindInterval + "s.");
+        private void DumpHierarchy(Transform t, string indent)
+        {
+            DiagnosticLog.Info(indent + t.name + " (active=" + t.gameObject.activeSelf + ", children=" + t.childCount + ")");
+            for (int i = 0; i < t.childCount; i++)
+                DumpHierarchy(t.GetChild(i), indent + "  ");
         }
 
         private void BindMita(Transform mita)
         {
-            mitaRoot     = mita;
-            mitaAnimator = mita.GetComponentInChildren<Animator>(true);
+            mitaRoot   = mita;
+            mitaPerson = FindPersonInChildren(mita);
             DiagnosticLog.Info(
-                "Mita bound at '" + LocalPlayerLocator.GetPath(mita) + "'" +
-                (mitaAnimator != null ? " (animator found)" : " (no animator)"));
+                "MitaSampler: bound at '" + LocalPlayerLocator.GetPath(mita) + "'" +
+                (mitaPerson != null ? " (Person found)" : " (Person NOT found - dumping hierarchy)"));
+            if (mitaPerson == null)
+            {
+                DiagnosticLog.Info("=== Mita hierarchy dump ===");
+                DumpHierarchy(mita, "  ");
+            }
         }
 
-        // ── Sample ─────────────────────────────────────────────────────────────
-        private MitaState SampleMita()
+        private static Transform FindPersonInChildren(Transform root)
         {
-            MitaState state  = new MitaState();
-            state.senderId   = localPlayerId;
-            state.sceneName  = lastSceneName;
-            state.position   = NetVector3.FromUnity(mitaRoot.position);
-            state.rotation   = NetQuaternion.FromUnity(mitaRoot.rotation);
-            state.tick       = tick++;
-
-            if (mitaAnimator != null)
+            if (root == null) return null;
+            if (root.name == "Person") return root;
+            Transform person = root.Find("Person");
+            if (person != null) return person;
+            for (int i = 0; i < root.childCount; i++)
             {
-                try
-                {
-                    // animator.parameters returns Il2CppReferenceArray<AnimatorControllerParameter>
-                    // which TypeLoadExceptions because AnimatorControllerParameter is a struct
-                    // and violates the Il2CppReferenceArray<T> reference-type constraint.
-                    // Use parameterCount + GetParameter(int) instead — confirmed present
-                    // in the IL2CPP dump (not stripped), unlike the .parameters property.
-                    List<AnimatorFloatParam> floats = new List<AnimatorFloatParam>();
-                    List<AnimatorBoolParam>  bools  = new List<AnimatorBoolParam>();
-                    int paramCount = mitaAnimator.parameterCount;
-
-                    for (int i = 0; i < paramCount; i++)
-                    {
-                        AnimatorControllerParameter p = mitaAnimator.GetParameter(i);
-                        if (p == null) continue;
-                        int hash = Animator.StringToHash(p.name);
-                        if (p.type == AnimatorControllerParameterType.Float)
-                        {
-                            AnimatorFloatParam fp = new AnimatorFloatParam();
-                            fp.name = p.name; fp.value = mitaAnimator.GetFloat(hash);
-                            floats.Add(fp);
-                        }
-                        else if (p.type == AnimatorControllerParameterType.Bool)
-                        {
-                            AnimatorBoolParam bp = new AnimatorBoolParam();
-                            bp.name = p.name; bp.value = mitaAnimator.GetBool(hash);
-                            bools.Add(bp);
-                        }
-                    }
-
-                    state.floatParameters = floats.ToArray();
-                    state.boolParameters  = bools.ToArray();
-
-                    AnimatorStateInfo info = mitaAnimator.GetCurrentAnimatorStateInfo(0);
-                    AnimationClip[] clips;
-                    if (mitaAnimator.runtimeAnimatorController != null)
-                        clips = mitaAnimator.runtimeAnimatorController.animationClips;
-                    else
-                        clips = new AnimationClip[0];
-                    for (int i = 0; i < clips.Length; i++)
-                    {
-                        if (clips[i] != null && info.IsName(clips[i].name))
-                        {
-                            state.currentAnimation = clips[i].name;
-                            break;
-                        }
-                    }
-                }
-                catch (Exception) { }
+                Transform result = FindPersonInChildren(root.GetChild(i));
+                if (result != null) return result;
             }
+            return null;
+        }
 
-            return state;
+        private static Dictionary<string, BoneTransformData> SampleBones(Transform personRoot)
+        {
+            if (personRoot == null) return null;
+            var result = new Dictionary<string, BoneTransformData>(BoneSyncData.Count);
+            for (int i = 0; i < BoneSyncData.Count; i++)
+            {
+                string path = BoneSyncData.BonePaths[i];
+                if (string.IsNullOrEmpty(path)) continue;
+                Transform bone = personRoot.Find(path);
+                if (bone == null) continue;
+                BoneTransformData data = new BoneTransformData();
+                data.PosX = bone.localPosition.x;
+                data.PosY = bone.localPosition.y;
+                data.PosZ = bone.localPosition.z;
+                data.RotX = bone.localRotation.x;
+                data.RotY = bone.localRotation.y;
+                data.RotZ = bone.localRotation.z;
+                data.RotW = bone.localRotation.w;
+                result[path] = data;
+            }
+            return result;
         }
     }
 }

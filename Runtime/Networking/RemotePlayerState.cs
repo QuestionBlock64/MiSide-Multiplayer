@@ -41,6 +41,9 @@ namespace MiSideMultiplayer
         // Any other value = the .vrmmod model name the remote player has loaded.
         public string customModelName;
 
+        public NetQuaternion[] boneRotations;   // see BoneSync.BonePaths for order
+        public bool            hasBoneData;
+
         public int tick;
     }
 
