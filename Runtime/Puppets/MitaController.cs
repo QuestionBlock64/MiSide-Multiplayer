@@ -1,102 +1,80 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace MiSideMultiplayer
 {
-    /// <summary>
-    /// Receives MitaState broadcasts from the authority player and smoothly
-    /// applies them to the local World/Mita object.
-    ///
-    /// Authority rule: only apply state when the sender's ID is
-    /// lexicographically smaller than the local player's ID. This creates a
-    /// consistent, deterministic host without explicit election.
-    /// </summary>
     public sealed class MitaController
     {
-        // ── Config ──────────────────────────────────────────────────────────────
         private string localPlayerId;
 
-        // ── Mita reference ──────────────────────────────────────────────────────
         private Transform mitaRoot;
+        private Transform mitaPerson;
+        private Transform mitaHeadBone;
         private Animator  mitaAnimator;
         private float     nextFindTime;
         private string    lastSceneName;
-        private const float FindInterval = 4f;
+        private const float FindInterval = 1f;
 
-        // ── Interpolation ───────────────────────────────────────────────────────
         private Vector3    targetPosition;
-        private Quaternion targetRotation  = Quaternion.identity;
+        private Quaternion targetRotation = Quaternion.identity;
         private Vector3    smoothVelocity;
         private bool       hasState;
-        private const float SmoothTime      = 0.12f;
-        private const float RotationSpeed   = 12f;
-        private const float TeleportDist    = 6f;
+        private const float SmoothTime    = 0.05f;
+        private const float RotationSpeed = 20f;
+        private const float TeleportDist  = 2f;
 
-        // ── Configure ───────────────────────────────────────────────────────────
+        private const float HeadLookSpeed = 8f;
+
         public void Configure(string playerId)
         {
             localPlayerId = playerId;
         }
 
-        // ── Apply incoming Mita state ────────────────────────────────────────────
         public void OnRemoteMitaStateReceived(MitaState state)
         {
             if (state == null || string.IsNullOrEmpty(state.senderId))
                 return;
 
-            // Ignore our own echo
             if (state.senderId == localPlayerId)
                 return;
 
-            // Authority check: only follow the player with the smallest ID.
-            // If our ID is smaller, WE are the authority — ignore incoming state.
             if (!string.IsNullOrEmpty(localPlayerId) &&
                 string.Compare(localPlayerId, state.senderId, StringComparison.Ordinal) < 0)
-            {
-                return; // We are the authority; our local Mita AI runs normally.
-            }
+                return;
 
-            // Scene check
             if (!string.IsNullOrEmpty(state.sceneName) &&
                 state.sceneName != SceneManager.GetActiveScene().name)
-            {
-                return; // Different scene; do nothing.
-            }
+                return;
 
-            // Ensure we have a Mita reference
             if (mitaRoot == null)
                 TryFindMita();
 
             if (mitaRoot == null)
-            {
-                DiagnosticLog.Warning(
-                    "MitaController: received Mita state from '" + state.senderId +
-                    "' but World/Mita not found locally.");
                 return;
-            }
 
-            // Store target
             targetPosition = state.position.ToUnity();
             targetRotation = state.rotation.ToUnity();
 
             if (!hasState)
             {
-                mitaRoot.SetPositionAndRotation(targetPosition, targetRotation);
+                mitaRoot.position = targetPosition;
+                mitaRoot.rotation = targetRotation;
                 smoothVelocity = Vector3.zero;
                 hasState = true;
 
+                if (mitaAnimator != null)
+                    mitaAnimator.speed = 0f;
+
                 DiagnosticLog.Info(
-                    "MitaController: authority is '" + state.senderId + "'. " +
-                    "Applying Mita state from remote.");
+                    "MitaController: authority is '" + state.senderId + "'.");
             }
 
-            // Apply animator parameters immediately
-            if (mitaAnimator != null)
-                ApplyAnimatorParams(state);
+            if (state.Bones != null && state.Bones.Count > 0 && mitaPerson != null)
+                ApplyBones(state.Bones);
         }
 
-        // ── Per-frame interpolation ──────────────────────────────────────────────
         public void Tick()
         {
             string sceneName = SceneManager.GetActiveScene().name;
@@ -104,15 +82,25 @@ namespace MiSideMultiplayer
             {
                 lastSceneName = sceneName;
                 mitaRoot      = null;
+                mitaPerson    = null;
+                mitaHeadBone  = null;
                 mitaAnimator  = null;
                 hasState      = false;
                 nextFindTime  = 0f;
             }
 
+            if (mitaRoot == null && Time.unscaledTime >= nextFindTime)
+            {
+                nextFindTime = Time.unscaledTime + FindInterval;
+                TryFindMita();
+            }
+
+            if (mitaRoot != null && mitaHeadBone == null)
+                mitaHeadBone = FindHeadBone(mitaPerson);
+
             if (mitaRoot == null || !hasState)
                 return;
 
-            // Smooth position
             float dist = Vector3.Distance(mitaRoot.position, targetPosition);
             if (dist > TeleportDist)
             {
@@ -125,89 +113,179 @@ namespace MiSideMultiplayer
                     mitaRoot.position, targetPosition, ref smoothVelocity, SmoothTime);
             }
 
-            // Smooth rotation
             float rotT = 1f - Mathf.Exp(-RotationSpeed * Time.deltaTime);
             mitaRoot.rotation = Quaternion.Slerp(mitaRoot.rotation, targetRotation, rotT);
+
+            UpdateHeadLook();
         }
 
-        // ── Mita lookup ─────────────────────────────────────────────────────────
+        private void UpdateHeadLook()
+        {
+            if (mitaHeadBone == null) return;
+
+            Transform lookTarget = GetNearestPlayer();
+            if (lookTarget == null) return;
+
+            Vector3 direction = lookTarget.position - mitaHeadBone.position;
+            if (direction.sqrMagnitude < 0.01f) return;
+
+            Quaternion targetLook = Quaternion.LookRotation(direction, Vector3.up);
+            Quaternion localTarget = Quaternion.Inverse(mitaRoot.rotation) * targetLook;
+
+            float t = 1f - Mathf.Exp(-HeadLookSpeed * Time.deltaTime);
+            mitaHeadBone.rotation = Quaternion.Slerp(mitaHeadBone.rotation, mitaRoot.rotation * localTarget, t);
+        }
+
+        private Transform GetNearestPlayer()
+        {
+            Transform nearest = null;
+            float nearestDist = float.MaxValue;
+
+            // Check local player
+            Transform localPlayer = LocalPlayerLocator.FindHardcodedPlayerPath();
+            if (localPlayer != null)
+            {
+                float d = Vector3.Distance(mitaRoot.position, localPlayer.position);
+                if (d < nearestDist)
+                {
+                    nearestDist = d;
+                    nearest = localPlayer;
+                }
+            }
+
+            // Check remote puppets
+            foreach (PuppetController puppet in PuppetRegistry.AllPuppets)
+            {
+                if (puppet != null && puppet.GameObject != null)
+                {
+                    float d = Vector3.Distance(mitaRoot.position, puppet.GameObject.transform.position);
+                    if (d < nearestDist)
+                    {
+                        nearestDist = d;
+                        nearest = puppet.GameObject.transform;
+                    }
+                }
+            }
+
+            return nearest;
+        }
+
         private void TryFindMita()
         {
-            if (Time.unscaledTime < nextFindTime)
-                return;
-
-            nextFindTime = Time.unscaledTime + FindInterval;
-
             Scene scene = SceneManager.GetActiveScene();
-            if (!scene.IsValid() || !scene.isLoaded)
-                return;
+            if (!scene.IsValid() || !scene.isLoaded) return;
 
             lastSceneName = scene.name;
-            GameObject[] roots = scene.GetRootGameObjects();
 
-            for (int i = 0; i < roots.Length; i++)
+            GameObject worldGO = GameObject.Find("World");
+            if (worldGO != null)
             {
-                if (!string.Equals(roots[i].name, "World", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                Transform mita = roots[i].transform.Find("Mita");
-                if (mita != null)
+                Transform quests = worldGO.transform.Find("Quests");
+                if (quests != null)
                 {
-                    mitaRoot     = mita;
-                    mitaAnimator = mita.GetComponentInChildren<Animator>(true);
-                    DiagnosticLog.Info(
-                        "MitaController: found World/Mita at '" +
-                        LocalPlayerLocator.GetPath(mita) + "'.");
-                    return;
+                    Transform mita = FindByNameRecursive(quests, "Mita");
+                    if (mita != null && mita.gameObject.activeSelf)
+                    {
+                        BindMita(mita.gameObject);
+                        return;
+                    }
                 }
             }
 
-            // Fallback
-            GameObject fallback = GameObject.Find("Mita");
-            if (fallback != null)
+            GameObject direct = GameObject.Find("Mita");
+            if (direct != null && direct.activeSelf)
             {
-                mitaRoot     = fallback.transform;
-                mitaAnimator = fallback.GetComponentInChildren<Animator>(true);
-                DiagnosticLog.Info(
-                    "MitaController: found Mita (fallback) at '" +
-                    LocalPlayerLocator.GetPath(mitaRoot) + "'.");
+                BindMita(direct);
+                return;
             }
         }
 
-        // ── Apply animator params ────────────────────────────────────────────────
-        private void ApplyAnimatorParams(MitaState state)
+        private void BindMita(GameObject mita)
         {
-            try
-            {
-                if (state.floatParameters != null)
-                {
-                    for (int i = 0; i < state.floatParameters.Length; i++)
-                    {
-                        int hash = Animator.StringToHash(state.floatParameters[i].name);
-                        mitaAnimator.SetFloat(hash, state.floatParameters[i].value);
-                    }
-                }
+            mitaRoot     = mita.transform;
+            mitaPerson   = FindPersonInChildren(mita.transform);
+            mitaHeadBone = FindHeadBone(mitaPerson);
+            mitaAnimator = mita.GetComponentInChildren<Animator>(true);
+            DiagnosticLog.Info(
+                "MitaController: bound at '" + LocalPlayerLocator.GetPath(mita.transform) + "'" +
+                (mitaPerson != null ? " (Person found)" : " (Person NOT found)") +
+                (mitaHeadBone != null ? " (Head found)" : " (Head NOT found)"));
+        }
 
-                if (state.boolParameters != null)
-                {
-                    for (int i = 0; i < state.boolParameters.Length; i++)
-                    {
-                        int hash = Animator.StringToHash(state.boolParameters[i].name);
-                        mitaAnimator.SetBool(hash, state.boolParameters[i].value);
-                    }
-                }
+        private static Transform FindHeadBone(Transform personRoot)
+        {
+            if (personRoot == null) return null;
+            Transform armature = personRoot.Find("Armature");
+            if (armature == null) return null;
 
-                if (!string.IsNullOrEmpty(state.currentAnimation))
-                {
-                    int hash = Animator.StringToHash(state.currentAnimation);
-                    if (mitaAnimator.HasState(0, hash))
-                        mitaAnimator.CrossFadeInFixedTime(hash, 0.1f);
-                }
-            }
-            catch (Exception ex)
+            string[] paths =
             {
-                DiagnosticLog.Warning("MitaController.ApplyAnimatorParams failed: " + ex.Message);
+                "Hips/Spine/Chest/Neck2/Neck1/Head",
+                "Hips/Spine/Chest/Neck1/Head",
+                "Hips/Spine/Chest/Neck/Head",
+            };
+
+            for (int i = 0; i < paths.Length; i++)
+            {
+                Transform t = armature.Find(paths[i]);
+                if (t != null) return t;
             }
+
+            return FindByNameRecursive(armature, "Head");
+        }
+
+        private static Transform FindByNameRecursive(Transform root, string name)
+        {
+            if (root == null) return null;
+            if (root.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) return root;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform result = FindByNameRecursive(root.GetChild(i), name);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private static Transform FindPersonInChildren(Transform root)
+        {
+            if (root == null) return null;
+            if (root.name == "Person") return root;
+            Transform person = root.Find("Person");
+            if (person != null) return person;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                Transform result = FindPersonInChildren(root.GetChild(i));
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private void ApplyBones(Dictionary<string, BoneTransformData> boneData)
+        {
+            if (mitaPerson == null || boneData == null) return;
+
+            float originalSpeed = 1f;
+            bool hasAnim = mitaAnimator != null;
+            if (hasAnim)
+            {
+                originalSpeed = mitaAnimator.speed;
+                mitaAnimator.speed = 0f;
+            }
+
+            for (int i = 0; i < BoneSyncData.Count; i++)
+            {
+                string path = BoneSyncData.BonePaths[i];
+                if (string.IsNullOrEmpty(path)) continue;
+                Transform bone = mitaPerson.Find(path);
+                if (bone == null) continue;
+                BoneTransformData data;
+                if (!boneData.TryGetValue(path, out data)) continue;
+                bone.localPosition = new Vector3(data.PosX, data.PosY, data.PosZ);
+                bone.localRotation = new Quaternion(data.RotX, data.RotY, data.RotZ, data.RotW);
+            }
+
+            if (hasAnim)
+                mitaAnimator.speed = originalSpeed;
         }
     }
 }

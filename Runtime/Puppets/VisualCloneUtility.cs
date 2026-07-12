@@ -7,35 +7,42 @@ namespace MiSideMultiplayer
 {
     public static class VisualCloneUtility
     {
-        // ── Physics component type-names to PRESERVE during sanitisation ───────
-        // These are MonoBehaviours that drive cloth / spring / hair physics.
-        // Stripping them makes custom models look stiff (no hair/cloth bounce).
-        // We match by runtime type-name so we don't need compile-time references
-        // to DynamicBone or MS_CustomModels.SpringBones assemblies.
         private static readonly string[] PhysicsKeepNames =
         {
-            // MiSide / Unity ecosystem bone-physics
             "DynamicBone",
             "DynamicBoneCollider",
             "DynamicBonePlaneCollider",
-            // MS_CustomModels spring bones (from DLL reflection)
             "SpringBone",
             "SpringManager",
             "VRMSpringBone",
             "VRMSpringBoneColliderGroup",
-            // VRM secondary components
             "VRMBlendShapeProxy",
             "BlendShapeProxy",
-            // Magica Cloth (used by MiSide — MagicaPhysicsManager is scene root).
-            // MagicaBoneCloth = cloth sim (skirts etc). MagicaBoneSpring is the
-            // LIGHTER hair-sway-only component MagicaCloth2 typically uses for
-            // hair specifically — this was missing before, likely why hair on
-            // cloned puppets went rigid even though skirt/cloth still moved.
             "MagicaCloth",
             "MagicaBoneCloth",
             "MagicaBoneSpring",
             "MagicaMeshCloth",
             "MagicaMeshSpring",
+        };
+
+        // Body mesh names that are hidden by PlayerMove.HideBody in first person.
+        // On a puppet (always third person), we hide these and keep only the
+        // mirror meshes (HeadMirror/HairMirror) which are the "real" appearance.
+        // If we keep both, the puppet renders two overlapping bodies.
+        private static readonly string[] BodyMeshNamesToHide =
+        {
+            "Body",
+            "body",
+            "Torso",
+            "torso",
+            "Arms",
+            "arms",
+            "Legs",
+            "legs",
+            "Hand",
+            "hand",
+            "Feet",
+            "feet",
         };
 
         // ── Public entry points ───────────────────────────────────────────────
@@ -69,11 +76,6 @@ namespace MiSideMultiplayer
             else
                 PlaceCloneAtPuppetRoot(sourceRoot, cloneTransform);
 
-            // Copy MaterialPropertyBlocks BEFORE sanitisation.
-            // Material_ColorVariables (a MonoBehaviour) sets skin/hair colour per-renderer
-            // via SetPropertyBlock(). After SanitizeVisualClone removes MonoBehaviours,
-            // those blocks are gone and the clone's skin renders magenta (default shader
-            // colour). Copying them here preserves skin tone on the puppet.
             CopyMaterialPropertyBlocks(sourceRoot, cloneTransform);
             int stage1 = CountRenderers(cloneTransform);
 
@@ -83,34 +85,168 @@ namespace MiSideMultiplayer
             ForceRenderersVisible(cloneTransform);
             int stage3 = CountRenderers(cloneTransform);
 
-            // Staged diagnostic — if renderers drop to 0 at any stage, this
-            // pinpoints exactly which step is responsible instead of guessing.
+            // Hide body meshes that overlap with HeadMirror/HairMirror.
+            // This prevents the puppet from rendering two bodies on top of each other.
+            HideBodyMeshes(cloneTransform);
+            int stage4 = CountRenderers(cloneTransform);
+
             DiagnosticLog.Info(
                 "Clone pipeline for '" + sourceRoot.name + "': " +
                 "afterInstantiate=" + stage0 +
                 "  afterAlign+PropBlocks=" + stage1 +
                 "  afterSanitize=" + stage2 +
-                "  afterForceVisible=" + stage3 + " renderer(s).");
+                "  afterForceVisible=" + stage3 +
+                "  afterHideBodyMeshes=" + stage4 + " renderer(s).");
 
-            // HeadMirror / HairMirror presence check — both should survive since
-            // they are direct children of Person, which is inside this clone.
             Transform hm = FindByNameRecursiveStatic(cloneTransform, "HeadMirror");
             Transform hr = FindByNameRecursiveStatic(cloneTransform, "HairMirror");
             DiagnosticLog.Info(
                 "  HeadMirror=" + (hm != null ? "present(" + CountRenderers(hm) + " r)" : "MISSING") +
                 "  HairMirror=" + (hr != null ? "present(" + CountRenderers(hr) + " r)" : "MISSING"));
 
-            // Magenta-material safety net + diagnostics. Magenta in Unity
-            // specifically means "shader failed to compile / not included in
-            // build" (Hidden/InternalErrorShader) or a null material — it is
-            // never a legitimate authored colour. We hide any renderer in that
-            // state (better an armless puppet than a glowing error-colour
-            // artifact) and log full material/shader detail for every renderer
-            // whose path contains "Arm" so the exact object responsible is
-            // identifiable from the log even if this heuristic doesn't catch it.
             LogArmAndMaterialDiagnostics(cloneTransform);
+            HideKnownFloatingArtifacts(cloneTransform);
+
+            try
+            {
+                Camera[] cams = cloneTransform.GetComponentsInChildren<Camera>(true);
+                for (int i = 0; i < cams.Length; i++) if (cams[i] != null) cams[i].enabled = false;
+                AudioListener[] listeners = cloneTransform.GetComponentsInChildren<AudioListener>(true);
+                for (int i = 0; i < listeners.Length; i++) if (listeners[i] != null) listeners[i].enabled = false;
+            }
+            catch (Exception) { }
 
             return cloneTransform;
+        }
+
+        // ── Hide overlapping body meshes ─────────────────────────────────────
+
+        /// <summary>
+        /// On a puppet clone, hides SkinnedMeshRenderers whose names suggest they
+        /// are the first-person body meshes (hidden by PlayerMove.HideBody on the
+        /// local player). The mirror meshes (HeadMirror/HairMirror) are the
+        /// "real" third-person appearance and are NOT hidden.
+        /// This prevents the puppet from rendering two overlapping bodies.
+        /// </summary>
+        private static void HideBodyMeshes(Transform root)
+        {
+            if (root == null) return;
+
+            int hidden = 0;
+            SkinnedMeshRenderer[] renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                SkinnedMeshRenderer r = renderers[i];
+                if (r == null) continue;
+
+                string name = r.gameObject.name;
+
+                // NEVER hide mirror meshes — these are the real appearance
+                if (name.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+
+                // NEVER hide Hair or Head meshes that might be mirror-related
+                if (name.IndexOf("Head", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    name.IndexOf("Mirror", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+
+                // Check if this is a body mesh that should be hidden
+                bool shouldHide = false;
+                for (int j = 0; j < BodyMeshNamesToHide.Length; j++)
+                {
+                    if (name.IndexOf(BodyMeshNamesToHide[j], StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        shouldHide = true;
+                        break;
+                    }
+                }
+
+                if (shouldHide && r.enabled)
+                {
+                    r.enabled = false;
+                    hidden++;
+                    DiagnosticLog.Info(
+                        "  Hid body mesh: " + LocalPlayerLocator.GetPath(r.transform));
+                }
+            }
+
+            if (hidden > 0)
+                DiagnosticLog.Info(
+                    "HideBodyMeshes: hid " + hidden + " body mesh(es) — keeping only mirror meshes.");
+        }
+
+        private static readonly string[] FloatingArtifactNamePatterns =
+        {
+            "Item",
+            "Wrist",
+            "Hand Left",
+            "Hand Right",
+        };
+
+        private static void HideKnownFloatingArtifacts(Transform cloneTransform)
+        {
+            try
+            {
+                int hidden = 0;
+                HideFloatingArtifactsRecursive(cloneTransform, cloneTransform, ref hidden);
+                if (hidden > 0)
+                    DiagnosticLog.Info(
+                        "HideKnownFloatingArtifacts: hid " + hidden +
+                        " renderer(s) (held-item/wrist/hand props), preserving anything Ring-related.");
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Warning("HideKnownFloatingArtifacts failed: " + ex.Message);
+            }
+        }
+
+        private static void HideFloatingArtifactsRecursive(Transform node, Transform root, ref int hidden)
+        {
+            if (node == null) return;
+
+            if (node.name.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0)
+                return;
+
+            bool matchesPattern = false;
+            for (int i = 0; i < FloatingArtifactNamePatterns.Length; i++)
+            {
+                if (node.name.IndexOf(FloatingArtifactNamePatterns[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    matchesPattern = true;
+                    break;
+                }
+            }
+
+            if (matchesPattern)
+            {
+                Renderer[] renderers = node.GetComponentsInChildren<Renderer>(true);
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    if (renderers[i] == null || !renderers[i].enabled) continue;
+
+                    if (renderers[i].transform.name.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    bool underRing = false;
+                    Transform p = renderers[i].transform.parent;
+                    while (p != null && p != node.parent)
+                    {
+                        if (p.name.IndexOf("Ring", StringComparison.OrdinalIgnoreCase) >= 0) { underRing = true; break; }
+                        p = p.parent;
+                    }
+                    if (underRing) continue;
+
+                    renderers[i].enabled = false;
+                    hidden++;
+                    DiagnosticLog.Info(
+                        "  Hid floating-artifact renderer: " + LocalPlayerLocator.GetPath(renderers[i].transform));
+                }
+                return;
+            }
+
+            int childCount = node.childCount;
+            for (int i = 0; i < childCount; i++)
+                HideFloatingArtifactsRecursive(node.GetChild(i), root, ref hidden);
         }
 
         private static void LogArmAndMaterialDiagnostics(Transform cloneTransform)
@@ -238,14 +374,10 @@ namespace MiSideMultiplayer
             return s + m;
         }
 
-        // ── Sanitise — strips gameplay scripts, KEEPS Animator + physics ──────
         public static void SanitizeVisualClone(Transform root, Transform animatorSource = null)
         {
             if (root == null) return;
 
-            // Snapshot all Animators before the MonoBehaviour sweep.
-            // In IL2CPP the sweep can inadvertently destroy Animator;
-            // we restore them afterwards.
             AnimatorSnapshot[] snapshots = SaveAnimators(root);
 
             RemoveComponents<Camera>(root);
@@ -256,11 +388,8 @@ namespace MiSideMultiplayer
             RemoveComponents<Collider>(root);
             RemoveComponents<Collider2D>(root);
             RemoveComponents<CharacterController>(root);
-            // Physics MonoBehaviours (DynamicBone, SpringBone …) are preserved by
-            // IsPhysicsComponent() inside RemoveComponents.
             RemoveComponents<MonoBehaviour>(root);
 
-            // Ensure Animator survived (or restore it from snapshot)
             RestoreAnimators(root, snapshots);
 
             DiagnosticLog.Info(
@@ -268,16 +397,6 @@ namespace MiSideMultiplayer
                 "'  animator snapshots=" + snapshots.Length);
         }
 
-        // Confirmed in IL2CPP dump: PlayerMove.HideBody(bool) exists — MiSide
-        // hides the local player's own body from their own first-person camera
-        // by some combination of layer exclusion and/or shadow-only rendering
-        // (the game also uses PIDI_PlanarReflection for mirrors, which reads
-        // meshes via a LayerMask — "v_reflectLayers" — confirming a layer-based
-        // visibility scheme exists in this project). Whichever technique the
-        // original body used, Object.Instantiate() copies it onto our clone
-        // too. A puppet is always viewed from a THIRD-PERSON external camera,
-        // so we force every cloned renderer back to fully-visible defaults:
-        // Default layer (0) and normal (non-shadow-only) rendering.
         public static void ForceRenderersVisible(Transform root)
         {
             if (root == null) return;
@@ -326,8 +445,6 @@ namespace MiSideMultiplayer
                     " renderer shadow-mode(s) to On (undoing first-person body hiding).");
         }
 
-        // ── Animator snapshot / restore ───────────────────────────────────────
-
         private struct AnimatorSnapshot
         {
             public Transform               Target;
@@ -367,7 +484,6 @@ namespace MiSideMultiplayer
                 Animator existing = target.GetComponent<Animator>();
                 if (existing != null)
                 {
-                    // Survived — normalise settings for puppet use.
                     existing.applyRootMotion = false;
                     existing.cullingMode     = AnimatorCullingMode.AlwaysAnimate;
                     existing.updateMode      = AnimatorUpdateMode.Normal;
@@ -375,7 +491,6 @@ namespace MiSideMultiplayer
                     continue;
                 }
 
-                // Was destroyed by the MonoBehaviour sweep — re-add it.
                 Animator restored = target.gameObject.AddComponent<Animator>();
                 restored.runtimeAnimatorController = snapshots[i].Controller;
                 restored.avatar                    = snapshots[i].Avatar;
@@ -390,7 +505,6 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── MaterialPropertyBlock copy ─────────────────────────────────────────
         private static void CopyMaterialPropertyBlocks(Transform source, Transform clone)
         {
             if (source == null || clone == null) return;
@@ -421,7 +535,6 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── Component removal helper ──────────────────────────────────────────
         private static void RemoveComponents<T>(Transform root) where T : Component
         {
             T[] components = root.GetComponentsInChildren<T>(true);
@@ -430,11 +543,9 @@ namespace MiSideMultiplayer
                 Component component = components[i];
                 if (component == null) continue;
 
-                // Always keep Animator.
                 if (component is Animator)
                     continue;
 
-                // Keep bone-physics MonoBehaviours (DynamicBone, SpringBone …).
                 if (IsPhysicsComponent(component))
                     continue;
 
@@ -450,7 +561,6 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── Physics-component guard ───────────────────────────────────────────
         private static bool IsPhysicsComponent(Component c)
         {
             if (c == null) return false;
@@ -462,7 +572,6 @@ namespace MiSideMultiplayer
             return false;
         }
 
-        // ── Utility ───────────────────────────────────────────────────────────
         private static void SetActiveRecursive(Transform root, bool active)
         {
             if (root == null) return;
@@ -471,7 +580,6 @@ namespace MiSideMultiplayer
                 SetActiveRecursive(root.GetChild(i), active);
         }
 
-        // ── Manual-clone path ─────────────────────────────────────────────────
         private static Transform CloneTransformTree(
             Transform source,
             Transform parent,

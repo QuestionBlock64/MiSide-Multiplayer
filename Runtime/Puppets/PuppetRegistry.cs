@@ -13,6 +13,24 @@ namespace MiSideMultiplayer
         private float nextNoPuppetLogTime;
         private const float NoPuppetLogInterval = 10f;
 
+        // ── Static accessor for MitaController head tracking ──────────────────
+        public static IEnumerable<PuppetController> AllPuppets
+        {
+            get
+            {
+                if (_instance == null)
+                    return new PuppetController[0];
+                return _instance.puppets.Values;
+            }
+        }
+
+        private static PuppetRegistry _instance;
+
+        public PuppetRegistry()
+        {
+            _instance = this;
+        }
+
         // ── Apply incoming state ────────────────────────────────────────────────
         public void Apply(RemotePlayerState state, Transform localPlayerRoot,
                           PuppetFactory factory)
@@ -24,7 +42,6 @@ namespace MiSideMultiplayer
             PuppetController puppet;
             bool exists = puppets.TryGetValue(state.playerId, out puppet);
 
-            // ── Different scene → destroy puppet ───────────────────────────────
             if (!isSameScene)
             {
                 if (exists && puppet != null)
@@ -37,15 +54,12 @@ namespace MiSideMultiplayer
                 return;
             }
 
-            // ── Same scene: create if needed ───────────────────────────────────
             if (!exists || puppet == null)
             {
                 DiagnosticLog.Info(
                     "Creating puppet for '" + state.playerId +
                     "' model='" + (state.customModelName ?? "None") + "'.");
 
-                // Pass the remote custom model name so PuppetFactory can attempt
-                // to load it via ModelPuppet before falling back to visual clone.
                 puppet = factory.Create(
                     state.playerId,
                     state.displayName ?? state.playerId,
@@ -68,13 +82,15 @@ namespace MiSideMultiplayer
             puppet.ApplySnapshot(state);
         }
 
-        // ── Remove by ID ───────────────────────────────────────────────────────
         public void Remove(string playerId)
         {
             if (string.IsNullOrEmpty(playerId)) return;
             PuppetController puppet;
             if (!puppets.TryGetValue(playerId, out puppet)) return;
             puppets.Remove(playerId);
+
+            BoneSync.ClearPending(playerId);
+
             DiagnosticLog.Info(
                 "Puppet removed for '" + playerId + "'. " +
                 puppets.Count + " remaining.");
@@ -82,7 +98,14 @@ namespace MiSideMultiplayer
                 UnityEngine.Object.Destroy(puppet.GameObject);
         }
 
-        // ── Tick ───────────────────────────────────────────────────────────────
+        public GameObject GetPuppet(string playerId)
+        {
+            PuppetController controller;
+            if (puppets.TryGetValue(playerId, out controller) && controller != null)
+                return controller.GameObject;
+            return null;
+        }
+
         public void Tick()
         {
             foreach (KeyValuePair<string, PuppetController> pair in puppets)
@@ -97,14 +120,12 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── LateTick (called from LateUpdate, after Animator runs) ────────────
         public void LateTick()
         {
             foreach (KeyValuePair<string, PuppetController> pair in puppets)
                 if (pair.Value != null) pair.Value.LateTick();
         }
 
-        // ── Clear ──────────────────────────────────────────────────────────────
         public void Clear()
         {
             foreach (KeyValuePair<string, PuppetController> pair in puppets)
@@ -118,7 +139,6 @@ namespace MiSideMultiplayer
                     "Puppet registry cleared (" + count + " destroyed).");
         }
 
-        // ── Helpers ────────────────────────────────────────────────────────────
         private static bool IsSameScene(string remoteName)
         {
             if (string.IsNullOrEmpty(remoteName)) return true;
