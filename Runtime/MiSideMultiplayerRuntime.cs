@@ -25,6 +25,11 @@ namespace MiSideMultiplayer
             MiSideMultiplayerPlugin.LateTickRuntime();
         }
 
+        private void OnGUI()
+        {
+            MiSideMultiplayerPlugin.DrawRuntimeGui();
+        }
+
         private void OnDestroy()
         {
             MiSideMultiplayerPlugin.DisposeRuntime();

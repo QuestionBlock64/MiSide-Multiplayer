@@ -39,7 +39,7 @@ namespace MiSideMultiplayer
                 "Identity",
                 "DisplayName",
                 "Player",
-                "Name sent with local snapshots.");
+                "Name sent with local snapshots, chat messages, and join/leave notices.");
 
             visualRootCandidates = Config.Bind(
                 "Puppets",
@@ -118,7 +118,8 @@ namespace MiSideMultiplayer
                 enableNetworking.Value,
                 serverHost.Value,
                 serverPort.Value,
-                roomName.Value);
+                roomName.Value,
+                () => displayName.Value);
 
             Log.LogInfo("MiSide multiplayer puppet runtime initialized for BepInEx 6 IL2CPP.");
         }
@@ -133,6 +134,12 @@ namespace MiSideMultiplayer
         {
             if (runtimeServices != null)
                 runtimeServices.LateTick();
+        }
+
+        internal static void DrawRuntimeGui()
+        {
+            if (runtimeServices != null)
+                runtimeServices.OnGui();
         }
 
         internal static void DisposeRuntime()

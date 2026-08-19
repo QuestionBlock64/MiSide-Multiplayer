@@ -14,7 +14,10 @@ namespace MiSideMultiplayer
         private readonly WorldDoorSync        worldDoorSync;
         private readonly WorldStoryObjectSync worldStoryObjectSync;
         private readonly BoneSync             boneSync;
+        private readonly ChatController       chatController;
+        private readonly SharedLifeController  sharedLifeController;
         private readonly string               localPlayerId;
+        private readonly InventorySharingController inventorySharingController;
 
         public RuntimeServices(
             Transform runtimeRoot,
@@ -28,7 +31,8 @@ namespace MiSideMultiplayer
             bool      enableNetworking,
             string    serverHost,
             int       serverPort,
-            string    roomName)
+            string    roomName,
+            Func<string> displayNameProvider)
         {
             this.localPlayerId = localPlayerId;
 
@@ -42,14 +46,22 @@ namespace MiSideMultiplayer
             worldDoorSync        = new WorldDoorSync();
             worldStoryObjectSync = new WorldStoryObjectSync();
             boneSync             = new BoneSync();
+            chatController       = new ChatController(
+                rpcDispatcher,
+                networkManager,
+                localPlayerId,
+                displayNameProvider);
 
+            sharedLifeController = new SharedLifeController(rpcDispatcher, localPlayerId);
             relayTransport = new TcpRelayTransport(
                 rpcDispatcher,
                 localPlayerId,
                 roomName,
                 serverHost,
                 serverPort,
-                enableNetworking);
+                enableNetworking,
+                displayNameProvider);
+            inventorySharingController = new InventorySharingController(rpcDispatcher, localPlayerId);
 
             mitaController.Configure(localPlayerId);
             mitaSampler.Configure(rpcDispatcher, localPlayerId, snapshotSendRate * 0.5f);
@@ -92,6 +104,8 @@ namespace MiSideMultiplayer
             worldDoorSync.Tick();
             worldStoryObjectSync.Tick();
             boneSync.Tick();
+            chatController.Tick();
+            inventorySharingController.Tick();
         }
 
         public void LateTick()
@@ -100,12 +114,20 @@ namespace MiSideMultiplayer
             boneSync.LateTick();
         }
 
+        public void OnGui()
+        {
+            chatController.OnGui();
+        }
+
         public void Dispose()
         {
             if (rpcDispatcher != null)
                 rpcDispatcher.SendPlayerLeft(localPlayerId);
 
             relayTransport.Dispose();
+            sharedLifeController.Dispose();
+            chatController.Dispose();
+            inventorySharingController.Dispose();
             networkManager.Dispose();
             boneSync.Dispose();
         }

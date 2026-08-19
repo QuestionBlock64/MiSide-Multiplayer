@@ -18,12 +18,14 @@ namespace MiSideMultiplayer
         private readonly string host;
         private readonly int port;
         private readonly bool isEnabled;
+        private readonly Func<string> displayNameProvider;
         private readonly object writerLock = new object();
         private readonly object logLock    = new object();
         private readonly Queue<LogEntry>   pendingLogs = new Queue<LogEntry>();
         private readonly JsonSerializerOptions jsonOptions = new JsonSerializerOptions
         {
-            IncludeFields = true
+            IncludeFields = true,
+            PropertyNameCaseInsensitive = true
         };
 
         private Thread    workerThread;
@@ -45,7 +47,8 @@ namespace MiSideMultiplayer
             string roomName,
             string host,
             int port,
-            bool isEnabled)
+            bool isEnabled,
+            Func<string> displayNameProvider)
         {
             this.dispatcher    = dispatcher;
             this.localPlayerId = localPlayerId;
@@ -53,6 +56,7 @@ namespace MiSideMultiplayer
             this.host          = string.IsNullOrEmpty(host)     ? "127.0.0.1" : host;
             this.port          = port <= 0                       ? 7777         : port;
             this.isEnabled     = isEnabled;
+            this.displayNameProvider = displayNameProvider;
         }
 
         public void Start()
@@ -204,6 +208,7 @@ namespace MiSideMultiplayer
             envelope.senderId  = localPlayerId;
             envelope.eventName = eventName;
             envelope.payload   = jsonPayload ?? string.Empty;
+            envelope.displayName = GetDisplayName();
 
             SendEnvelope(envelope);
         }
@@ -215,6 +220,8 @@ namespace MiSideMultiplayer
             env.senderId  = localPlayerId;
             env.eventName = RpcDispatcher.TransportHelloEvent;
             env.payload   = "{}";
+            env.displayName = GetDisplayName();
+            env.sceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
             SendEnvelope(env);
         }
 
@@ -276,7 +283,8 @@ namespace MiSideMultiplayer
                 if (envelope == null)
                     return;
 
-                if (!IsSameRoom(envelope.roomName))
+                if (envelope.eventName != RpcDispatcher.ServerResponseEvent &&
+                    !IsSameRoom(envelope.roomName))
                     return;
 
                 if (!string.IsNullOrEmpty(envelope.senderId) &&
@@ -321,6 +329,12 @@ namespace MiSideMultiplayer
             if (string.IsNullOrEmpty(remoteRoom))
                 return roomName == "default";
             return string.Equals(remoteRoom, roomName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetDisplayName()
+        {
+            string displayName = displayNameProvider != null ? displayNameProvider() : null;
+            return string.IsNullOrWhiteSpace(displayName) ? "Player" : displayName.Trim();
         }
 
         private void CloseConnection()
@@ -383,6 +397,8 @@ namespace MiSideMultiplayer
             public string senderId;
             public string eventName;
             public string payload;
+            public string displayName;
+            public string sceneName;
         }
 
         private struct LogEntry
