@@ -53,6 +53,11 @@
       <HintPath>$(BepInExDir)\core\Il2CppInterop.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="0Harmony"
+               Condition="Exists('$(BepInExDir)\core\0Harmony.dll')">
+      <HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Il2Cppmscorlib"
                Condition="Exists('$(InteropDir)\Il2Cppmscorlib.dll')">
       <HintPath>$(InteropDir)\Il2Cppmscorlib.dll</HintPath>
@@ -92,6 +97,16 @@
     <Reference Include="UnityEngine.TextRenderingModule"
                Condition="Exists('$(InteropDir)\UnityEngine.TextRenderingModule.dll')">
       <HintPath>$(InteropDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule"
+               Condition="Exists('$(InteropDir)\UnityEngine.IMGUIModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"
+               Condition="Exists('$(InteropDir)\UnityEngine.InputLegacyModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
