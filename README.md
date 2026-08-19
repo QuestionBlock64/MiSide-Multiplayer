@@ -8,7 +8,7 @@ This modification is currently in active development. While the core connection 
 * **Mita Synchronization**: Initial implementation is live. Basic positional and behavioral states sync, but advanced interactions are still undergoing stabilization.
 * **Mission Synchronization**: Preliminary objective and quest tracking are active, but complex progression triggers are still prone to desynchronization.
 * **Environment Synchronization**: World state changes, triggers, and environmental updates are not yet reflected across all clients.
-* **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states is not yet supported.
+* **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states is available, but it might be prone to bugs.
 
 ## Installation & Setup
 
