@@ -7,7 +7,7 @@ The MiSide Multiplayer Mod is a pioneering modification that introduces full mul
 This modification is currently in active development. While the core connection framework and **all player animations (including custom models via the MiSide Custom Model Loader)** are now fully functional and optimized, please be aware that the following features are still undergoing development:
 * **Mita Synchronization**: Initial implementation is live. Basic positional and behavioral states sync, but advanced interactions are still undergoing stabilization.
 * **Mission Synchronization**: Preliminary objective and quest tracking are active, but complex progression triggers are still prone to desynchronization.
-* **Environment Synchronization**: World state changes, triggers, and environmental updates are not yet reflected across all clients.
+* **Environment Synchronization**: World state changes, triggers, and environmental updates are available, but they might be prone to bugs.
 * **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states is available, but it might be prone to bugs.
 
 ## Installation & Setup
