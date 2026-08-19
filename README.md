@@ -17,10 +17,7 @@ This modification is currently in active development. While the core connection 
 * BepInEx framework installed in your game directory.
 
 ### First-Time Setup
-After installing the mod via BepInEx, you must launch the game once and then close it. This allows the mod to generate the configuration file required for the hosting and client setup steps below.
-
-
-**A detailed Host and Client Instructions are in the server's repository. (https://github.com/QuestionBlock64/MiSideMultiplayerServer)
+After installing the mod via BepInEx, you must launch the game once and then close it. This allows the mod to generate the configuration file required for the hosting and client setup steps in the server's repository. (https://github.com/QuestionBlock64/MiSideMultiplayerServer)
 
 ## Configuration
 Player names, visual customizations, and network settings are managed entirely within the `MS_Multiplayer.cfg` file. 
