@@ -5,23 +5,33 @@ using UnityEngine.SceneManagement;
 
 namespace MiSideMultiplayer
 {
-    /// <summary>
-    /// Syncs GameObject.activeSelf for Location*-tagged objects and
-    /// World/Quests. When a quest object activates, teleports the
-    /// remote player to the sender so they don't miss quest events.
-    /// </summary>
     public sealed class WorldStoryObjectSync
     {
+        private static WorldStoryObjectSync _active;
+
         private RpcDispatcher dispatcher;
         private string        localPlayerId;
 
         private float nextSampleTime;
         private float nextFullResyncTime;
-        private const float SampleInterval     = 0.5f;
+        private const float SampleInterval     = 1.0f;
         private const float FullResyncInterval = 10f;
+
+        private readonly List<KeyValuePair<string, GameObject>> _cachedQuestsNodes =
+            new List<KeyValuePair<string, GameObject>>();
+        private float _nextQuestsRecacheTime;
+        private const float QuestsRecacheInterval = 60f;
+
+        private readonly List<KeyValuePair<string, GameObject>> _cachedTrackedNodes =
+            new List<KeyValuePair<string, GameObject>>();
+        private float _nextTrackedRecacheTime;
+        private const float TrackedRecacheInterval = 60f;
 
         private readonly Dictionary<string, bool> lastKnownActive = new Dictionary<string, bool>();
         private readonly HashSet<string>          syncedPaths     = new HashSet<string>();
+
+        private readonly Dictionary<string, float> _lastTeleportByPath = new Dictionary<string, float>();
+        private const float TeleportPathCooldown = 10f;
 
         private bool loggedFirstSend;
         private string lastSceneName;
@@ -30,12 +40,31 @@ namespace MiSideMultiplayer
         {
             dispatcher    = rpcDispatcher;
             localPlayerId = playerId;
+            _active       = this;
 
             if (dispatcher != null)
             {
                 dispatcher.RemoteStoryObjectStateReceived -= OnRemoteStoryObjectState;
                 dispatcher.RemoteStoryObjectStateReceived += OnRemoteStoryObjectState;
             }
+        }
+
+        public static void ResetCachesForWorldChange()
+        {
+            WorldStoryObjectSync s = _active;
+            if (s == null) return;
+
+            s.lastKnownActive.Clear();
+            s.syncedPaths.Clear();
+            s._cachedQuestsNodes.Clear();
+            s._cachedTrackedNodes.Clear();
+            s._lastTeleportByPath.Clear();
+            s._nextQuestsRecacheTime = 0f;
+            s._nextTrackedRecacheTime = 0f;
+            s.nextSampleTime     = 0f;
+            s.nextFullResyncTime = 0f;
+
+            DiagnosticLog.Info("WorldStoryObjectSync: caches cleared for world transition.");
         }
 
         public void Tick()
@@ -48,6 +77,11 @@ namespace MiSideMultiplayer
                 lastSceneName = sceneName;
                 syncedPaths.Clear();
                 lastKnownActive.Clear();
+                _cachedQuestsNodes.Clear();
+                _cachedTrackedNodes.Clear();
+                _lastTeleportByPath.Clear();
+                _nextQuestsRecacheTime = 0f;
+                _nextTrackedRecacheTime = 0f;
             }
 
             bool timeToSample = Time.unscaledTime >= nextSampleTime;
@@ -57,37 +91,149 @@ namespace MiSideMultiplayer
             if (timeToSample) nextSampleTime     = Time.unscaledTime + SampleInterval;
             if (timeToResync) nextFullResyncTime = Time.unscaledTime + FullResyncInterval;
 
-            WorldStoryObjectRegistry.EnsureScannedForCurrentScene();
-            foreach (KeyValuePair<string, GameObject> pair in WorldStoryObjectRegistry.AllTracked)
-            {
-                if (pair.Value != null)
-                    SyncObject(pair.Key, pair.Value);
-            }
-
-            SyncWorldSubHierarchy("Quests");
+            SyncTrackedFromCache();
+            SyncQuestsFromCache();
         }
 
-        private void SyncWorldSubHierarchy(string subPath)
+        // ── Location*-registry feed ────────────────────────────────────────
+
+        private void SyncTrackedFromCache()
         {
+            if (_cachedTrackedNodes.Count == 0 ||
+                Time.unscaledTime >= _nextTrackedRecacheTime)
+            {
+                RebuildTrackedCache();
+            }
+
+            for (int i = 0; i < _cachedTrackedNodes.Count; i++)
+            {
+                var kv = _cachedTrackedNodes[i];
+                if (kv.Value == null) continue;
+                SyncObject(kv.Key, kv.Value);
+            }
+        }
+
+        private void RebuildTrackedCache()
+        {
+            _nextTrackedRecacheTime = Time.unscaledTime + TrackedRecacheInterval;
+            _cachedTrackedNodes.Clear();
+
+            WorldStoryObjectRegistry.EnsureScannedForCurrentScene();
+
+            foreach (KeyValuePair<string, GameObject> pair in WorldStoryObjectRegistry.AllTracked)
+            {
+                GameObject go = pair.Value;
+                if (go == null) continue;
+
+                if (SubtreeHasDialogue3DText(go)) continue;
+
+                _cachedTrackedNodes.Add(new KeyValuePair<string, GameObject>(pair.Key, go));
+            }
+
+            DiagnosticLog.Info("WorldStoryObjectSync: cached " + _cachedTrackedNodes.Count +
+                               " tracked Location* node(s).");
+        }
+
+        // ── Quests subtree feed ────────────────────────────────────────────
+
+        private void SyncQuestsFromCache()
+        {
+            if (_cachedQuestsNodes.Count == 0 ||
+                Time.unscaledTime >= _nextQuestsRecacheTime)
+            {
+                RebuildQuestsCache();
+            }
+
+            for (int i = 0; i < _cachedQuestsNodes.Count; i++)
+            {
+                var kv = _cachedQuestsNodes[i];
+                if (kv.Value == null) continue;
+                SyncObject(kv.Key, kv.Value);
+            }
+        }
+
+        private void RebuildQuestsCache()
+        {
+            _nextQuestsRecacheTime = Time.unscaledTime + QuestsRecacheInterval;
+            _cachedQuestsNodes.Clear();
+
             GameObject worldGO = GameObject.Find("World");
             if (worldGO == null) return;
 
-            Transform node = worldGO.transform.Find(subPath);
+            Transform node = worldGO.transform.Find("Quests");
             if (node == null) return;
 
-            SyncHierarchyRecursive(node);
+            CollectQuestsSubtree(node, _cachedQuestsNodes);
+
+            DiagnosticLog.Info("WorldStoryObjectSync: cached " + _cachedQuestsNodes.Count +
+                               " Quests node(s).");
         }
 
-        private void SyncHierarchyRecursive(Transform node)
+        private void CollectQuestsSubtree(Transform node,
+                                          List<KeyValuePair<string, GameObject>> output)
         {
             if (node == null) return;
 
+            // Skip this node and everything below it if it contains a
+            // Dialogue_3DText anywhere in its subtree. Dialogue_3DText.Start
+            // re-fires on every OnEnable and re-prints the pre-localized
+            // string, which is what stacked on top of the localized text.
+            if (SubtreeHasDialogue3DText(node.gameObject))
+                return;
+
             string path = LocalPlayerLocator.GetPath(node);
-            SyncObject(path, node.gameObject);
+            output.Add(new KeyValuePair<string, GameObject>(path, node.gameObject));
 
             for (int i = 0; i < node.childCount; i++)
-                SyncHierarchyRecursive(node.GetChild(i));
+                CollectQuestsSubtree(node.GetChild(i), output);
         }
+
+        // ── Dialogue detection ─────────────────────────────────────────────
+
+        private static bool SubtreeHasDialogue3DText(GameObject go)
+        {
+            if (go == null) return false;
+            return SubtreeHasDialogue3DTextRecursive(go.transform);
+        }
+
+        private static bool SubtreeHasDialogue3DTextRecursive(Transform t)
+        {
+            if (t == null) return false;
+
+            if (NodeHasDialogue3DText(t.gameObject)) return true;
+
+            int childCount = t.childCount;
+            for (int i = 0; i < childCount; i++)
+            {
+                Transform child = t.GetChild(i);
+                if (child == null) continue;
+                if (SubtreeHasDialogue3DTextRecursive(child)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool NodeHasDialogue3DText(GameObject go)
+        {
+            if (go == null) return false;
+
+            Component[] comps;
+            try { comps = go.GetComponents<Component>(); }
+            catch { return false; }
+            if (comps == null) return false;
+
+            for (int i = 0; i < comps.Length; i++)
+            {
+                Component c = comps[i];
+                if (c == null) continue;
+                if (c.GetType().Name == "Dialogue_3DText")
+                    return true;
+            }
+
+            return false;
+        }
+
+        // ── Sync ───────────────────────────────────────────────────────────
 
         private void SyncObject(string path, GameObject go)
         {
@@ -145,10 +291,8 @@ namespace MiSideMultiplayer
                 go.SetActive(state.isActive);
                 lastKnownActive[state.path] = state.isActive;
 
-                if (state.isActive && IsQuestPath(state.path))
-                {
+                if (state.isActive && ShouldTeleportForPath(state.path))
                     TeleportLocalPlayerToSender(state);
-                }
             }
             catch (Exception ex)
             {
@@ -157,9 +301,16 @@ namespace MiSideMultiplayer
             }
         }
 
-        private bool IsQuestPath(string path)
+        private static bool ShouldTeleportForPath(string path)
         {
-            return path.IndexOf("Quests", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (string.IsNullOrEmpty(path)) return false;
+
+            if (path.IndexOf("TriggerRoom", StringComparison.OrdinalIgnoreCase) < 0 &&
+                path.IndexOf("SpawnPoint", StringComparison.OrdinalIgnoreCase) < 0 &&
+                path.IndexOf("Teleport", StringComparison.OrdinalIgnoreCase) < 0)
+                return false;
+
+            return true;
         }
 
         private void TeleportLocalPlayerToSender(WorldStoryObjectState state)
@@ -167,16 +318,25 @@ namespace MiSideMultiplayer
             Transform localPlayer = LocalPlayerLocator.FindHardcodedPlayerPath();
             if (localPlayer == null) return;
 
+            float lastTime;
+            if (_lastTeleportByPath.TryGetValue(state.path, out lastTime) &&
+                Time.unscaledTime - lastTime < TeleportPathCooldown)
+                return;
+
             Vector3 targetPos = state.senderPosition.ToUnity();
             if (targetPos == Vector3.zero) return;
+            if (targetPos.y < -1f) return;
 
             float dist = Vector3.Distance(localPlayer.position, targetPos);
-            if (dist < 5f) return;
+            if (dist < 15f) return;
+
+            _lastTeleportByPath[state.path] = Time.unscaledTime;
 
             localPlayer.position = targetPos;
             DiagnosticLog.Info(
                 "WorldStoryObjectSync: teleported local player to '" +
-                state.senderId + "' for quest '" + state.path + "'");
+                state.senderId + "' for quest '" + state.path + "' (cooldown " +
+                TeleportPathCooldown + "s)");
         }
 
         private static GameObject FindByPath(string path)

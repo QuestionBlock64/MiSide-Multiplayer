@@ -9,19 +9,7 @@ namespace MiSideMultiplayer
     /// Scans the active scene for known stateful world-object component types
     /// and indexes them by a STABLE PATH (GameController/World/.../ObjectName)
     /// so both players' clients can refer to the SAME object with the SAME
-    /// string identifier — they run the same scene layout, so the path is
-    /// deterministic on both ends without any explicit ID system.
-    ///
-    /// SCOPE (first pass): "ObjectDoor" only — confirmed via IL2CPP dump as a
-    /// generic, reusable component with a single authoritative bool ("open")
-    /// that the component's own Update()/LateUpdate() reads to drive the
-    /// smooth rotation/sound animation. We only need to feed the correct
-    /// value in; MiSide's own code handles the visual entirely, the same
-    /// philosophy that already worked for animator parameters.
-    ///
-    /// ObjectDoor is part of the base game assembly (not a separate mod DLL),
-    /// so unlike CustomModelBridge we don't need assembly-level reflection —
-    /// GameObject.GetComponent(string) finds it directly by type name.
+    /// string identifier.
     /// </summary>
     public static class WorldObjectRegistry
     {
@@ -34,10 +22,6 @@ namespace MiSideMultiplayer
 
         public static int DoorCount { get { return doorsByPath.Count; } }
 
-        /// <summary>
-        /// Rescans the active scene if it has changed since the last scan.
-        /// Cheap to call every tick — only does real work on a scene change.
-        /// </summary>
         public static void EnsureScannedForCurrentScene()
         {
             string sceneName = SceneManager.GetActiveScene().name;
@@ -45,6 +29,17 @@ namespace MiSideMultiplayer
                 return;
 
             RescanNow(sceneName);
+        }
+
+        /// <summary>
+        /// Force a full rescan on next access, even if the scene name hasn't
+        /// changed. Used by WorldTransitionSync when a new "world" activates
+        /// inside the same scene.
+        /// </summary>
+        public static void ForceRescan()
+        {
+            scannedForScene = null;
+            doorsByPath.Clear();
         }
 
         private static void RescanNow(string sceneName)
@@ -104,7 +99,6 @@ namespace MiSideMultiplayer
             return found;
         }
 
-        /// <summary>Path → Component for every known door. Do not mutate.</summary>
         public static Dictionary<string, Component> AllDoors { get { return doorsByPath; } }
 
         public static bool TryGetDoor(string path, out Component door)

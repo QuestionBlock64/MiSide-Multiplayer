@@ -8,38 +8,12 @@ namespace MiSideMultiplayer
 {
     /// <summary>
     /// Syncs ObjectDoor state across players by directly matching the door's
-    /// REAL rotation, continuously, rather than trying to recompute or
-    /// trigger it indirectly.
-    ///
-    /// THIRD correction for this file, and this one should actually work.
-    /// First version wrote the "open" field directly (no effect — that
-    /// field is an output of physics, not an input). Second version called
-    /// the private DoorOpened()/DoorClosed() methods (still no visible
-    /// effect — those only react to the angle already having changed, they
-    /// don't cause it to change). Third attempt tried computing the open
-    /// rotation manually via HingeJoint.axis — but axis/anchor/motor/spring
-    /// are ALL STRIPPED from this IL2CPP build (confirmed via dump: only
-    /// HingeJoint.limits and .angle survived linker stripping, since
-    /// MiSide's own code apparently never calls the others directly), so
-    /// that would have thrown every single tick.
-    ///
-    /// This version sidesteps needing the axis at all: the SENDER reads the
-    /// door's ACTUAL, real, physically-simulated transform.localRotation
-    /// (a completely safe, always-available Transform property — no
-    /// reflection, no stripped API) at the moment "open" changes, and sends
-    /// THAT real rotation directly. The RECEIVER just Slerps its own copy of
-    /// the door toward that exact rotation every tick, with the Rigidbody
-    /// set kinematic so physics doesn't fight it. Same principle as
-    /// player position/rotation sync — transmit the real value, don't
-    /// recompute it from scratch.
-    ///
-    /// DoorOpened()/DoorClosed() are still invoked (best-effort, wrapped
-    /// safely) once we're close to the target, purely so "open"/sound stay
-    /// roughly consistent — but they are no longer load-bearing for the
-    /// visual result, which now comes from the direct rotation match.
+    /// REAL rotation, continuously, rather than trying to recompute it.
     /// </summary>
     public sealed class WorldDoorSync
     {
+        private static WorldDoorSync _active;
+
         private RpcDispatcher dispatcher;
         private string        localPlayerId;
 
@@ -50,14 +24,12 @@ namespace MiSideMultiplayer
         private const float FullResyncInterval = 8f;
         private const float DebugLogInterval   = 2f;
 
-        // ── Sender-side caches ──────────────────────────────────────────────────
         private readonly Dictionary<string, FieldInfo> openFieldCache = new Dictionary<string, FieldInfo>();
         private readonly Dictionary<string, bool>       lastKnownOpen = new Dictionary<string, bool>();
 
-        // ── Per-door receiver-side state ────────────────────────────────────────
         private sealed class DoorInfo
         {
-            public HingeJoint hinge;         // only used for the safe .angle diagnostic read now
+            public HingeJoint hinge;
             public Rigidbody  rb;
             public MethodInfo openedMethod;
             public MethodInfo closedMethod;
@@ -78,12 +50,34 @@ namespace MiSideMultiplayer
         {
             dispatcher    = rpcDispatcher;
             localPlayerId = playerId;
+            _active       = this;
 
             if (dispatcher != null)
             {
                 dispatcher.RemoteDoorStateReceived -= OnRemoteDoorState;
                 dispatcher.RemoteDoorStateReceived += OnRemoteDoorState;
             }
+        }
+
+        /// <summary>
+        /// Drops all per-scene cached state. Called from WorldTransitionSync
+        /// when a new world activates within the same scene, so doors keyed
+        /// by the previous world's paths don't survive.
+        /// </summary>
+        public static void ResetCachesForWorldChange()
+        {
+            WorldDoorSync s = _active;
+            if (s == null) return;
+
+            s.openFieldCache.Clear();
+            s.lastKnownOpen.Clear();
+            s.doorInfo.Clear();
+            s.firedOpenOnce.Clear();
+            s.firedCloseOnce.Clear();
+            s.nextSampleTime     = 0f;
+            s.nextFullResyncTime = 0f;
+
+            DiagnosticLog.Info("WorldDoorSync: caches cleared for world transition.");
         }
 
         public void Tick()
@@ -93,10 +87,9 @@ namespace MiSideMultiplayer
             WorldObjectRegistry.EnsureScannedForCurrentScene();
 
             SampleAndSend();
-            ForceApplyAllTick();   // every frame, not gated by the sample interval
+            ForceApplyAllTick();
         }
 
-        // ── Sender side ──────────────────────────────────────────────────────────
         private void SampleAndSend()
         {
             bool timeToSample = Time.unscaledTime >= nextSampleTime;
@@ -170,7 +163,6 @@ namespace MiSideMultiplayer
             }
         }
 
-        // ── Receiver side ────────────────────────────────────────────────────────
         private void OnRemoteDoorState(WorldDoorState state)
         {
             if (state == null || string.IsNullOrEmpty(state.path)) return;
@@ -178,7 +170,7 @@ namespace MiSideMultiplayer
 
             Component door;
             if (!WorldObjectRegistry.TryGetDoor(state.path, out door) || door == null)
-                return;   // normal — different room/scene, or not scanned yet
+                return;
 
             DoorInfo info = GetOrCaptureInfo(state.path, door);
             if (info == null) return;
@@ -198,11 +190,6 @@ namespace MiSideMultiplayer
                 "  (from '" + state.senderId + "')");
         }
 
-        // Gathers what we need for a door the first time we touch it.
-        // HingeJoint/Rigidbody are standard Unity component refs (no
-        // reflection). DoorOpened/DoorClosed are private game methods
-        // (reflection, best-effort, used only for sound/flag consistency —
-        // not load-bearing for the visual result anymore).
         private DoorInfo GetOrCaptureInfo(string path, Component door)
         {
             DoorInfo info;
@@ -237,9 +224,6 @@ namespace MiSideMultiplayer
             return info;
         }
 
-        // Runs every frame for every door we're actively forcing — Slerps
-        // the door's real rotation toward the received target, and fires
-        // the matching event method (best-effort) once we're close.
         private void ForceApplyAllTick()
         {
             bool doDebugLog = Time.unscaledTime >= nextDebugLogTime;
@@ -254,7 +238,7 @@ namespace MiSideMultiplayer
                 Component door;
                 if (!WorldObjectRegistry.TryGetDoor(path, out door) || door == null) continue;
 
-                const float slerpSpeed = 10f;   // per-second, exponential approach
+                const float slerpSpeed = 10f;
                 float t = 1f - Mathf.Exp(-slerpSpeed * Time.deltaTime);
                 door.transform.localRotation = Quaternion.Slerp(
                     door.transform.localRotation, info.targetRotation, t);
@@ -279,7 +263,7 @@ namespace MiSideMultiplayer
 
                 if (angleDiff < 1f)
                 {
-                    door.transform.localRotation = info.targetRotation;   // snap the last bit, avoid asymptotic creep
+                    door.transform.localRotation = info.targetRotation;
                     FireEventMethodOnce(path, info, info.desiredOpen);
                     info.beingForced = false;
                     if (info.rb != null)

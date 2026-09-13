@@ -79,8 +79,10 @@ namespace MiSideMultiplayer
             }
 
             EnqueueLog(false,
-                "Starting TCP relay transport — target: " + host + ":" + port +
-                "  room='" + roomName + "'  localId='" + localPlayerId + "'");
+                "[RELAY] Starting transport." +
+                "  endpoint='" + host + ":" + port + "'" +
+                "  room='" + roomName + "'" +
+                "  localId='" + localPlayerId + "'");
 
             dispatcher.OutgoingRpc += OnOutgoingRpc;
             isRunning = true;
@@ -110,7 +112,7 @@ namespace MiSideMultiplayer
                 dispatcher.OutgoingRpc -= OnOutgoingRpc;
 
             CloseConnection();
-            EnqueueLog(false, "Relay transport disposed.");
+            EnqueueLog(false, "[RELAY] Transport disposed.");
         }
 
         // ── Worker thread ──────────────────────────────────────────────────────
@@ -121,15 +123,36 @@ namespace MiSideMultiplayer
                 try
                 {
                     RunConnection();
-                    // If RunConnection returns cleanly (rare), reset failure counter
                     consecutiveFailures = 0;
+                }
+                catch (SocketException sex)
+                {
+                    consecutiveFailures++;
+                    LogRetry(
+                        "[RELAY] Connect to " + host + ":" + port +
+                        " FAILED (#" + consecutiveFailures + ")" +
+                        "  socketError=" + sex.SocketErrorCode +
+                        "  errCode=" + sex.ErrorCode +
+                        "  msg='" + sex.Message + "'");
+                }
+                catch (AggregateException aex)
+                {
+                    consecutiveFailures++;
+                    string inner = aex.InnerException != null
+                        ? aex.InnerException.GetType().Name + ": " + aex.InnerException.Message
+                        : aex.Message;
+                    LogRetry(
+                        "[RELAY] Connect to " + host + ":" + port +
+                        " FAILED (#" + consecutiveFailures + ")" +
+                        "  aggregate: " + inner);
                 }
                 catch (Exception ex)
                 {
                     consecutiveFailures++;
                     LogRetry(
-                        "Connection to relay " + host + ":" + port +
-                        " FAILED (#" + consecutiveFailures + "): " + ex.Message);
+                        "[RELAY] Connect to " + host + ":" + port +
+                        " FAILED (#" + consecutiveFailures + ")" +
+                        "  " + ex.GetType().Name + ": " + ex.Message);
                 }
                 finally
                 {
@@ -142,22 +165,25 @@ namespace MiSideMultiplayer
 
         private void RunConnection()
         {
-            EnqueueLog(false,
-                "Attempting to connect to relay server at " + host + ":" + port + " ...");
+            EnqueueLog(false, "[RELAY] Attempting connect → " + host + ":" + port);
 
             TcpClient tcpClient = new TcpClient();
             tcpClient.NoDelay = true;
 
-            Task connectTask = tcpClient.ConnectAsync(host, port);
-            if (!connectTask.Wait(TimeSpan.FromSeconds(3)))
+            // BeginConnect so we can bound the wait and log a meaningful
+            // timeout message. If host is a hostname, this also triggers DNS.
+            IAsyncResult ar = tcpClient.BeginConnect(host, port, null, null);
+            bool completed = ar.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(5));
+            if (!completed)
             {
                 tcpClient.Close();
                 throw new TimeoutException(
-                    "Timed out after 3s connecting to " + host + ":" + port +
-                    ". Is the relay server running?");
+                    "Timed out after 5s connecting to " + host + ":" + port +
+                    ". The SYN was sent but no SYN-ACK was received. " +
+                    "Usually this means the host firewall is dropping the packet.");
             }
 
-            connectTask.GetAwaiter().GetResult();
+            tcpClient.EndConnect(ar);
 
             NetworkStream  stream       = tcpClient.GetStream();
             StreamReader   reader       = new StreamReader(stream, Encoding.UTF8, false, 4096, true);
@@ -174,7 +200,7 @@ namespace MiSideMultiplayer
 
             consecutiveFailures = 0;
             EnqueueLog(false,
-                "Connected to relay server at " + host + ":" + port +
+                "[RELAY] CONNECTED to " + host + ":" + port +
                 "  room='" + roomName + "'. Sending hello...");
 
             SendHello();
@@ -185,16 +211,14 @@ namespace MiSideMultiplayer
                 if (line == null)
                 {
                     EnqueueLog(true,
-                        "Relay server at " + host + ":" + port +
-                        " closed the connection (ReadLine returned null).");
+                        "[RELAY] Server closed the connection (ReadLine returned null).");
                     break;
                 }
 
                 HandleIncomingLine(line);
             }
 
-            EnqueueLog(true,
-                "Disconnected from relay server at " + host + ":" + port + ".");
+            EnqueueLog(true, "[RELAY] Disconnected from " + host + ":" + port + ".");
         }
 
         // ── Outgoing RPC ───────────────────────────────────────────────────────
@@ -234,7 +258,7 @@ namespace MiSideMultiplayer
             }
             catch (Exception ex)
             {
-                EnqueueLog(true, "Failed to serialize relay envelope: " + ex.Message);
+                EnqueueLog(true, "[RELAY] Failed to serialize envelope: " + ex.Message);
                 return;
             }
 
@@ -255,14 +279,14 @@ namespace MiSideMultiplayer
                     {
                         loggedFirstOutboundState = true;
                         EnqueueLog(false,
-                            "Sent first local player state packet to relay " +
+                            "[RELAY] Sent first local player state packet to " +
                             host + ":" + port + ".");
                     }
                 }
                 catch (Exception ex)
                 {
                     EnqueueLog(true,
-                        "Relay send failed (connection lost?): " + ex.Message +
+                        "[RELAY] Send failed (connection lost?): " + ex.Message +
                         " — will reconnect.");
                     CloseConnection();
                 }
@@ -295,7 +319,8 @@ namespace MiSideMultiplayer
                     {
                         loggedIgnoredSameId = true;
                         EnqueueLog(true,
-                            "Ignored relay packet with same LocalPlayerId '" + localPlayerId +
+                            "[RELAY] Ignored relay packet with same LocalPlayerId '" +
+                            localPlayerId +
                             "'. If testing two clients on one PC, set different " +
                             "Identity.LocalPlayerId values in the BepInEx config.");
                     }
@@ -310,7 +335,7 @@ namespace MiSideMultiplayer
                 {
                     loggedFirstInboundState = true;
                     EnqueueLog(false,
-                        "Received first remote player state packet from relay " +
+                        "[RELAY] Received first remote player state packet from " +
                         host + ":" + port +
                         "  senderId='" + (envelope.senderId ?? "?") + "'.");
                 }
@@ -319,7 +344,7 @@ namespace MiSideMultiplayer
             }
             catch (Exception ex)
             {
-                EnqueueLog(true, "Failed to parse relay packet: " + ex.Message);
+                EnqueueLog(true, "[RELAY] Failed to parse packet: " + ex.Message);
             }
         }
 
@@ -361,7 +386,7 @@ namespace MiSideMultiplayer
             DateTime now = DateTime.UtcNow;
             if (now < nextRetryLogUtc) return;
             nextRetryLogUtc = now.AddSeconds(5);
-            EnqueueLog(true, "[MiSideMultiplayer] " + message + " Will retry in 1s...");
+            EnqueueLog(true, message + "  Will retry in 1s...");
         }
 
         private void SleepWhileRunning(int milliseconds)

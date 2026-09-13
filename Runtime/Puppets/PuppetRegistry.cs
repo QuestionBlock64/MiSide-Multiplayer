@@ -13,7 +13,6 @@ namespace MiSideMultiplayer
         private float nextNoPuppetLogTime;
         private const float NoPuppetLogInterval = 10f;
 
-        // ── Static accessor for MitaController head tracking ──────────────────
         public static IEnumerable<PuppetController> AllPuppets
         {
             get
@@ -31,7 +30,6 @@ namespace MiSideMultiplayer
             _instance = this;
         }
 
-        // ── Apply incoming state ────────────────────────────────────────────────
         public void Apply(RemotePlayerState state, Transform localPlayerRoot,
                           PuppetFactory factory)
         {
@@ -42,15 +40,15 @@ namespace MiSideMultiplayer
             PuppetController puppet;
             bool exists = puppets.TryGetValue(state.playerId, out puppet);
 
+            // On scene mismatch: HIDE the existing puppet rather than destroying it.
+            // Scene name can lag behind the remote client's actual state during a
+            // world transition inside the same scene — destroying and recreating
+            // would re-clone from the local player at a transitional moment and
+            // produce an invisible puppet. Hiding is reversible and cheap.
             if (!isSameScene)
             {
                 if (exists && puppet != null)
-                {
-                    DiagnosticLog.Info(
-                        "'" + state.playerId + "' moved to scene '" + state.sceneName +
-                        "' — destroying puppet.");
-                    Remove(state.playerId);
-                }
+                    puppet.SetVisible(false);
                 return;
             }
 

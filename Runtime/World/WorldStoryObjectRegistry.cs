@@ -7,27 +7,8 @@ namespace MiSideMultiplayer
 {
     /// <summary>
     /// Indexes GameObjects that carry a "story progression" script, so their
-    /// active/inactive state can be synced between players.
-    ///
-    /// BACKGROUND (from dump.cs investigation): MiSide has no single
-    /// centralized "story progress" variable. Story/environment changes are
-    /// implemented as 168 separate, bespoke component classes, ALL following
-    /// one consistent naming convention: "LocationNN_Description" (e.g.
-    /// Location20_RunCorridor_DoorDestroy, Location34_Communication,
-    /// Location14_QuestInteractive). Even classes that coordinate several
-    /// others (Location34_Communication, referenced as "main" by several
-    /// Location21_* scripts) are still just another bespoke script, not a
-    /// general controller — there is nothing to hook centrally.
-    ///
-    /// Given that, this takes the same "observe the externally visible
-    /// effect, don't try to understand the bespoke internal logic" approach
-    /// that already worked for doors: whatever object carries a Location*
-    /// script, track whether that OBJECT ITSELF is active or not, and
-    /// replicate that. Many story beats manifest exactly this way (an object
-    /// group gets enabled/disabled once triggered). This will not catch
-    /// every kind of change (material swaps, one-shot transform snaps, etc.)
-    /// but is a real, implementable majority-coverage approach given how
-    /// this game's code actually works — see the response for known gaps.
+    /// active/inactive state can be synced between players. Matches any
+    /// component whose type name is "Location" followed by a digit.
     /// </summary>
     public static class WorldStoryObjectRegistry
     {
@@ -45,6 +26,17 @@ namespace MiSideMultiplayer
                 return;
 
             RescanNow(sceneName);
+        }
+
+        /// <summary>
+        /// Force a full rescan on next access, even if the scene name hasn't
+        /// changed. Used by WorldTransitionSync when a new "world" activates
+        /// inside the same scene.
+        /// </summary>
+        public static void ForceRescan()
+        {
+            scannedForScene = null;
+            objectsByPath.Clear();
         }
 
         private static void RescanNow(string sceneName)
@@ -119,9 +111,7 @@ namespace MiSideMultiplayer
             return false;
         }
 
-        // Matches "Location" followed immediately by a digit — confirmed
-        // against all 168 real classes in the dump, zero false positives
-        // against unrelated engine/UI types.
+        // Matches "Location" followed immediately by a digit.
         private static bool IsLocationScriptName(string typeName)
         {
             const string prefix = "Location";

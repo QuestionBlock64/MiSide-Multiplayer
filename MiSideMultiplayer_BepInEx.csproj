@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
-    <LangVersion>7.3</LangVersion>
+    <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>MiSideMultiplayer</AssemblyName>
     <RootNamespace>MiSideMultiplayer</RootNamespace>
@@ -30,6 +30,10 @@
            Text="UnityEngine.CoreModule.dll not found at '$(InteropDir)\UnityEngine.CoreModule.dll'. Run MiSide once with BepInEx installed." />
     <Error Condition="!Exists('$(InteropDir)\Il2Cppmscorlib.dll')"
            Text="Il2Cppmscorlib.dll not found. Run MiSide once with BepInEx installed." />
+    <Error Condition="!Exists('$(InteropDir)\Assembly-CSharp.dll')"
+           Text="Assembly-CSharp.dll not found at '$(InteropDir)\Assembly-CSharp.dll'. Run MiSide once with BepInEx installed to generate interop assemblies." />
+    <Error Condition="!Exists('$(InteropDir)\Assembly-CSharp-firstpass.dll')"
+           Text="Assembly-CSharp-firstpass.dll not found at '$(InteropDir)\Assembly-CSharp-firstpass.dll'. Run MiSide once with BepInEx installed to generate interop assemblies." />
   </Target>
 
   <ItemGroup>
@@ -63,6 +67,16 @@
       <HintPath>$(InteropDir)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Assembly-CSharp"
+               Condition="Exists('$(InteropDir)\Assembly-CSharp.dll')">
+      <HintPath>$(InteropDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass"
+               Condition="Exists('$(InteropDir)\Assembly-CSharp-firstpass.dll')">
+      <HintPath>$(InteropDir)\Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.CoreModule"
                Condition="Exists('$(InteropDir)\UnityEngine.CoreModule.dll')">
       <HintPath>$(InteropDir)\UnityEngine.CoreModule.dll</HintPath>
@@ -93,7 +107,6 @@
       <HintPath>$(InteropDir)\UnityEngine.AudioModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- TextMesh for name tags (Person/HeadMirror confirmed; TextMesh is in this DLL) -->
     <Reference Include="UnityEngine.TextRenderingModule"
                Condition="Exists('$(InteropDir)\UnityEngine.TextRenderingModule.dll')">
       <HintPath>$(InteropDir)\UnityEngine.TextRenderingModule.dll</HintPath>
@@ -104,9 +117,19 @@
       <HintPath>$(InteropDir)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.UI"
+               Condition="Exists('$(InteropDir)\UnityEngine.UI.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.InputLegacyModule"
                Condition="Exists('$(InteropDir)\UnityEngine.InputLegacyModule.dll')">
       <HintPath>$(InteropDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule"
+               Condition="Exists('$(InteropDir)\UnityEngine.AIModule.dll')">
+      <HintPath>$(InteropDir)\UnityEngine.AIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

@@ -7,17 +7,17 @@ using UnityEngine.SceneManagement;
 
 namespace MiSideMultiplayer
 {
-    /// <summary>
-    /// Makes item pickups a relay-approved operation. The first player to click a
-    /// pickup owns the world item; other clients deactivate their local copy.
-    /// Key items are then mirrored through MiSide's own GameController methods,
-    /// keeping normal quest checks and UI events intact on every client.
-    /// </summary>
     internal sealed class InventorySharingController : IDisposable
     {
         private const float PendingTimeoutSeconds = 4f;
 
         private static InventorySharingController activeController;
+
+        // Set while WorldTransitionSync is force-clearing the local inventory
+        // on a world change. RemoveKeyItem's prefix skips the relay round-trip
+        // in that window, since the change is local and other clients may not
+        // even have the item.
+        public static bool BulkClearingInventory = false;
 
         private readonly RpcDispatcher dispatcher;
         private readonly string localPlayerId;
@@ -110,6 +110,28 @@ namespace MiSideMultiplayer
             {
                 DiagnosticLog.Warning("Inventory sharing patch cleanup failed: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Clears all per-world cached state. Called by WorldTransitionSync when
+        /// a world changes within the same scene name (which the Tick()'s
+        /// scene-name-change check wouldn't catch).
+        /// </summary>
+        public static void ForceCacheClear()
+        {
+            InventorySharingController c = activeController;
+            if (c == null) return;
+
+            c.pendingPickups.Clear();
+            c.pendingPickupExpiry.Clear();
+            c.claimedPickups.Clear();
+            c.knownKeyItems.Clear();
+            c.pendingConsumes.Clear();
+            c.consumedKeyItems.Clear();
+            c.allowedPickupPath = null;
+            c.applyingRemoteKeyChange = false;
+
+            DiagnosticLog.Info("InventorySharingController: caches cleared for world transition.");
         }
 
         private void InstallHooks()
@@ -205,6 +227,12 @@ namespace MiSideMultiplayer
         private bool ShouldRunKeyRemove(GameObject item)
         {
             if (disposed || applyingRemoteKeyChange || !IsGameplayScene())
+                return true;
+
+            // World transition inventory clear: allow the original RemoveKeyItem
+            // to run locally without a relay round-trip. The item is going away
+            // because the world changed, not because the player used it.
+            if (BulkClearingInventory)
                 return true;
 
             string itemPath = GetPath(item);

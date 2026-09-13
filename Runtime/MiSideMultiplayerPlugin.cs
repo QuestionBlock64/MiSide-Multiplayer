@@ -1,17 +1,22 @@
 using System;
+using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Unity.IL2CPP;
 using Il2CppInterop.Runtime.Injection;
+using HarmonyLib;
+using MiSideMultiplayer.API;
 
 namespace MiSideMultiplayer
 {
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
-    public sealed class MiSideMultiplayerPlugin : BasePlugin
+    public sealed partial class MiSideMultiplayerPlugin : BasePlugin
     {
-        public const string PluginGuid = "com.miside.multiplayer.puppets";
-        public const string PluginName = "MiSide Multiplayer Puppet Runtime";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginGuid = "MS_Multiplayer";
+        public const string PluginName = "MiSide Multiplayer Runtime";
+        public const string PluginVersion = "0.8.0-pre.1";
+
+        internal static MiSideMultiplayerRuntime RuntimeDriver;
 
         private ConfigEntry<string> localPlayerId;
         private ConfigEntry<string> displayName;
@@ -29,6 +34,10 @@ namespace MiSideMultiplayer
 
         public override void Load()
         {
+            // ── MITA-SYNC DIAGNOSTIC ────────────────────────────────────────
+            try { Log.LogInfo("[MITA-DIAG] Load() entered."); } catch { }
+            // ────────────────────────────────────────────────────────────────
+
             localPlayerId = Config.Bind(
                 "Identity",
                 "LocalPlayerId",
@@ -106,6 +115,8 @@ namespace MiSideMultiplayer
             RegisterIl2CppTypes();
 
             MiSideMultiplayerRuntime driver = AddComponent<MiSideMultiplayerRuntime>();
+            RuntimeDriver = driver;
+
             runtimeServices = new RuntimeServices(
                 driver.transform,
                 localPlayerId.Value,
@@ -121,13 +132,67 @@ namespace MiSideMultiplayer
                 roomName.Value,
                 () => displayName.Value);
 
-            Log.LogInfo("MiSide multiplayer puppet runtime initialized for BepInEx 6 IL2CPP.");
+            InitializeMultiplayerSettings();
+
+            // ── MITA-SYNC DIAGNOSTIC ────────────────────────────────────────
+            try
+            {
+                Log.LogInfo("[MITA-DIAG] About to construct Harmony and call MitaPlayerOverride.Initialize().");
+                Harmony harmony = new Harmony("com.miside.multiplayer.mita");
+                Log.LogInfo("[MITA-DIAG] Harmony instance created, calling Initialize()...");
+                MitaPlayerOverride.Configure(localPlayerId.Value);
+                MitaPlayerOverride.Initialize(harmony);
+                MitaEventSync.Initialize(harmony);
+                WorldTransitionSync.Initialize(harmony);
+                RuntimeServices.InitializeWorldGuard(harmony);
+                Log.LogInfo("[MITA-DIAG] MitaPlayerOverride.Initialize() returned normally.");
+
+                Log.LogInfo("[MITA-DIAG] Probing MitaWalkTarget type...");
+                Type mwtType = FindTypeAcrossAssemblies("MitaWalkTarget");
+                if (mwtType == null)
+                {
+                    Log.LogWarning("[MITA-DIAG] MitaWalkTarget type NOT FOUND in any loaded assembly.");
+                }
+                else
+                {
+                    Log.LogInfo("[MITA-DIAG] MitaWalkTarget found: " + mwtType.FullName +
+                                " in '" + mwtType.Assembly.GetName().Name + "'");
+                    MethodInfo start  = mwtType.GetMethod("Start",  BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    MethodInfo update = mwtType.GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    Log.LogInfo("[MITA-DIAG]   Start()  = " + (start  != null ? "FOUND" : "MISSING"));
+                    Log.LogInfo("[MITA-DIAG]   Update() = " + (update != null ? "FOUND" : "MISSING"));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.LogError("[MITA-DIAG] Mita init/probe THREW: " + ex);
+            }
+            // ────────────────────────────────────────────────────────────────
+
+            Log.LogInfo("MiSide multiplayer Runtime initialized for BepInEx 6 IL2CPP.");
         }
+
+        // ── MITA-SYNC DIAGNOSTIC HELPER ─────────────────────────────────────
+        private static Type FindTypeAcrossAssemblies(string name)
+        {
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    var t = asm.GetType(name, false);
+                    if (t != null) return t;
+                }
+                catch { }
+            }
+            return null;
+        }
+        // ────────────────────────────────────────────────────────────────────
 
         internal static void TickRuntime()
         {
             if (runtimeServices != null)
                 runtimeServices.Tick();
+            TickMultiplayerSettings();
         }
 
         internal static void LateTickRuntime()
@@ -140,6 +205,7 @@ namespace MiSideMultiplayer
         {
             if (runtimeServices != null)
                 runtimeServices.OnGui();
+            DrawMultiplayerSettingsGui();
         }
 
         internal static void DisposeRuntime()
@@ -176,15 +242,7 @@ namespace MiSideMultiplayer
 
         private static string CreateDefaultPlayerId()
         {
-            // Only ever called once — the first time the config file is
-            // generated. BepInEx writes the returned value to disk and reuses
-            // that SAVED value on every future launch (Config.Bind's default
-            // is not re-evaluated once a key exists in the file), so this
-            // stays stable per-install without ever touching machine name or
-            // Windows username — neither of which belongs in something that
-            // gets broadcast to every other player and saved in a config file
-            // people might share.
-            return "Player_" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            return Guid.NewGuid().ToString("N").Substring(0, 8);
         }
 
         private static string[] SplitCsv(string value)
