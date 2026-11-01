@@ -1,20 +1,14 @@
 # MiSide Multiplayer Mod
 
 ## Overview
-The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. Currently, the modification has been tested for a three-player cooperative experience, with potential support for more players.
+The MiSide Multiplayer Mod is a pioneering modification that introduces full multiplayer support to MiSide for the first time. The framework has been significantly expanded with a new connectivity system, featuring matchmaking lobbies (Public, Private, and Direct Connect), dedicated single-player and multiplayer separation, expanded support for up to 4 players per match, and full synchronization across Mita, world states, quests, and interactive objects.
 
 ## Current Limitations & Roadmap
 This modification is currently in active development. While the core connection framework and **all player animations (including custom models via the MiSide Custom Model Loader)** are now fully functional and optimized, please be aware that the following features are still undergoing development:
-* **Mita Synchronization**: Initial implementation is live. Basic positional and behavioral states sync, but advanced interactions are still undergoing stabilization.
-* **Mission Synchronization**: Preliminary objective and quest tracking are active, but complex progression triggers are still prone to desynchronization.
-* **Environment Synchronization**: World state changes, triggers, and environmental updates are available, but they might be prone to bugs.
-* **Object and Inventory Synchronization**: Proper handling of item pickups and inventory states is available, but it might be prone to bugs.
 
-## Installation & Setup
+* **Mita Latency:** Mita's position and animation are broadcast from the host client. On higher-ping connections, her remote copy may appear slightly behind the host's copy due to standard network latency.
 
-### Prerequisites
-* A clean installation of MiSide.
-* BepInEx framework installed in your game directory.
+* **Environmental & Physics Sync:** Certain full-world environmental state changes and physics-driven props may still experience minor state drift.
 
 ### First-Time Setup
 After installing the mod via BepInEx, you must launch the game once and then close it. This allows the mod to generate the configuration file required for the hosting and client setup steps in the server's repository. (https://github.com/QuestionBlock64/MiSideMultiplayerServer)
