@@ -1,0 +1,194 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>MiSideMultiplayer</AssemblyName>
+    <RootNamespace>MiSideMultiplayer</RootNamespace>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="RelayServer\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Runtime\UI\warning.png">
+      <LogicalName>MiSideMultiplayer.Runtime.UI.warning.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Runtime\UI\Multiplayer.png">
+      <LogicalName>MiSideMultiplayer.Runtime.UI.multiplayer.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Runtime\Menu\Music\MultiplayerPiano.ogg">
+      <LogicalName>MiSideMultiplayer.Runtime.Menu.Music.MultiplayerPiano.ogg</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == '' and '$(MISIDE_GAME_DIR)' != ''">$(MISIDE_GAME_DIR)</GameDir>
+    <BepInExDir Condition="'$(BepInExDir)' == '' and '$(GameDir)' != ''">$(GameDir)\BepInEx</BepInExDir>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(MSBuildProjectDirectory)\lib\BepInEx</BepInExDir>
+    <InteropDir Condition="'$(InteropDir)' == ''">$(BepInExDir)\Interop</InteropDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(BepInExDir)\core\BepInEx.Core.dll')"
+           Text="BepInEx.Core.dll not found at '$(BepInExDir)\core\BepInEx.Core.dll'." />
+    <Error Condition="!Exists('$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll')"
+           Text="BepInEx.Unity.IL2CPP.dll not found. You need BepInEx 6 IL2CPP." />
+    <Error Condition="!Exists('$(BepInExDir)\core\Il2CppInterop.Runtime.dll')"
+           Text="Il2CppInterop.Runtime.dll not found. You need BepInEx 6 IL2CPP." />
+    <Error Condition="!Exists('$(InteropDir)\UnityEngine.CoreModule.dll')"
+           Text="UnityEngine.CoreModule.dll not found at '$(InteropDir)\UnityEngine.CoreModule.dll'. Run MiSide once with BepInEx installed." />
+    <Error Condition="!Exists('$(InteropDir)\Il2Cppmscorlib.dll')"
+           Text="Il2Cppmscorlib.dll not found. Run MiSide once with BepInEx installed." />
+    <Error Condition="!Exists('$(InteropDir)\Il2CppSystem.dll')"
+           Text="Il2CppSystem.dll not found at '$(InteropDir)\Il2CppSystem.dll'. Run MiSide once with BepInEx installed." />
+    <Error Condition="!Exists('$(InteropDir)\Assembly-CSharp.dll')"
+           Text="Assembly-CSharp.dll not found at '$(InteropDir)\Assembly-CSharp.dll'. Run MiSide once with BepInEx installed to generate interop assemblies." />
+    <Error Condition="!Exists('$(InteropDir)\Assembly-CSharp-firstpass.dll')"
+           Text="Assembly-CSharp-firstpass.dll not found at '$(InteropDir)\Assembly-CSharp-firstpass.dll'. Run MiSide once with BepInEx installed to generate interop assemblies." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core"
+               Condition="Exists('$(BepInExDir)\core\BepInEx.Core.dll')">
+      <HintPath>$(BepInExDir)\core\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"
+               Condition="Exists('$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll')">
+      <HintPath>$(BepInExDir)\core\BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime"
+               Condition="Exists('$(BepInExDir)\core\Il2CppInterop.Runtime.dll')">
+      <HintPath>$(BepInExDir)\core\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Common"
+               Condition="Exists('$(BepInExDir)\core\Il2CppInterop.Common.dll')">
+      <HintPath>$(BepInExDir)\core\Il2CppInterop.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony"
+               Condition="Exists('$(BepInExDir)\core\0Harmony.dll')">
+      <HintPath>$(BepInExDir)\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="Il2CppSystem"
+               Condition="Exists('$(BepInExDir)\Interop\Il2CppSystem.dll')">
+      <HintPath>$(BepInExDir)\Interop\Il2CppSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib"
+               Condition="Exists('$(BepInExDir)\Interop\Il2Cppmscorlib.dll')">
+      <HintPath>$(BepInExDir)\Interop\Il2Cppmscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp"
+               Condition="Exists('$(BepInExDir)\Interop\Assembly-CSharp.dll')">
+      <HintPath>$(BepInExDir)\Interop\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass"
+               Condition="Exists('$(BepInExDir)\Interop\Assembly-CSharp-firstpass.dll')">
+      <HintPath>$(BepInExDir)\Interop\Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.CoreModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.PhysicsModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.Physics2DModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.Physics2DModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.AnimationModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.ParticleSystemModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.JSONSerializeModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.AudioModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.AudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.TextRenderingModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.IMGUIModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.UI.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UIEffect"
+               Condition="Exists('$(BepInExDir)\Interop\UIEffect.dll')">
+      <HintPath>$(BepInExDir)\Interop\UIEffect.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.UIModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.InputLegacyModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AIModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.AIModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.AIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.ImageConversionModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.UnityWebRequestModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.UnityWebRequestModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule"
+               Condition="Exists('$(BepInExDir)\Interop\UnityEngine.UnityWebRequestAudioModule.dll')">
+      <HintPath>$(BepInExDir)\Interop\UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Post-processing (PPv2). Used by MultiplayerConnectingOverlay for the
+         DepthOfField blur behind the connecting screen. -->
+    <Reference Include="Unity.Postprocessing.Runtime"
+               Condition="Exists('$(BepInExDir)\Interop\Unity.Postprocessing.Runtime.dll')">
+      <HintPath>$(BepInExDir)\Interop\Unity.Postprocessing.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
